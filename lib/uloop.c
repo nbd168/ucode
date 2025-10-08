@@ -968,8 +968,9 @@ uc_uloop_process_cb(struct uloop_process *proc, int exitcode)
  *
  * This function creates a process instance for executing external programs.
  * It takes the executable path string, an optional string array as the argument
- * vector, an optional dictionary describing environment variables, and a
- * callback function to be invoked when the invoked process ends.
+ * vector, an optional dictionary describing environment variables, a
+ * callback function to be invoked when the invoked process ends, and an optional
+ * setup callback to be invoked in the child process after fork().
  *
  * @function module:uloop#process
  *
@@ -986,6 +987,11 @@ uc_uloop_process_cb(struct uloop_process *proc, int exitcode)
  * @param {Function} callback
  * The callback function to be invoked when the invoked process ends.
  *
+ * @param {Function} [setup]
+ * Optional. A callback function to be invoked in the child process after fork()
+ * but before exec(). This can be used to set up file descriptors, change working
+ * directory, or perform other initialization.
+ *
  * @returns {?module:uloop.process}
  * Returns a process instance for executing external programs.
  * Returns `null` on error, e.g. due to `exec()` failure or invalid arguments.
@@ -995,6 +1001,16 @@ uc_uloop_process_cb(struct uloop_process *proc, int exitcode)
  * const myProcess = uloop.process("/bin/ls", ["-l", "/tmp"], null, (code) => {
  *     printf(`Process exited with code ${code}\n`);
  * });
+ *
+ * // With setup callback to redirect stderr
+ * const myProcess = uloop.process("/bin/ls", ["-l", "/tmp"], null, (code) => {
+ *     printf(`Process exited with code ${code}\n`);
+ * }, () => {
+ *     const fs = require('fs');
+ *     const errlog = fs.open('/tmp/error.log', 'w');
+ *     fs.dup2(errlog.fileno(), 2);
+ *     errlog.close();
+ * });
  */
 static uc_value_t *
 uc_uloop_process(uc_vm_t *vm, size_t nargs)
@@ -1003,6 +1019,7 @@ uc_uloop_process(uc_vm_t *vm, size_t nargs)
 	uc_value_t *arguments = uc_fn_arg(1);
 	uc_value_t *env_arg = uc_fn_arg(2);
 	uc_value_t *callback = uc_fn_arg(3);
+	uc_value_t *setup_cb = uc_fn_arg(4);
 	uc_uloop_process_t *process;
 	uc_stringbuf_t *buf;
 	char **argp, **envp;
@@ -1012,7 +1029,8 @@ uc_uloop_process(uc_vm_t *vm, size_t nargs)
 	if (ucv_type(executable) != UC_STRING ||
 	    (arguments && ucv_type(arguments) != UC_ARRAY) ||
 	    (env_arg && ucv_type(env_arg) != UC_OBJECT) ||
-	    !ucv_is_callable(callback)) {
+	    !ucv_is_callable(callback) ||
+	    (setup_cb && !ucv_is_callable(setup_cb))) {
 		err_return(EINVAL);
 	}
 
@@ -1022,6 +1040,13 @@ uc_uloop_process(uc_vm_t *vm, size_t nargs)
 		err_return(errno);
 
 	if (pid == 0) {
+		if (setup_cb) {
+			uc_vm_stack_push(vm, ucv_get(setup_cb));
+
+			if (uc_uloop_vm_call(vm, false, 0))
+				ucv_put(uc_vm_stack_pop(vm));
+		}
+
 		argp = calloc(ucv_array_length(arguments) + 2, sizeof(char *));
 		envp = environ;
 
