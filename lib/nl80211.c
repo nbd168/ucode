@@ -611,7 +611,7 @@ static const uc_nl_nested_spec_t nl80211_wiphy_bands_freqs_nla = {
 		{ NL80211_FREQUENCY_ATTR_NO_HT40_PLUS, "no_ht40_plus", DT_FLAG, 0, NULL },
 		{ NL80211_FREQUENCY_ATTR_NO_80MHZ, "no_80mhz", DT_FLAG, 0, NULL },
 		{ NL80211_FREQUENCY_ATTR_NO_160MHZ, "no_160mhz", DT_FLAG, 0, NULL },
-		{ NL80211_FREQUENCY_ATTR_DFS_CAC_TIME, "dfs_cac_time", DT_FLAG, 0, NULL },
+		{ NL80211_FREQUENCY_ATTR_DFS_CAC_TIME, "dfs_cac_time", DT_U32, 0, NULL },
 		{ NL80211_FREQUENCY_ATTR_INDOOR_ONLY, "indoor_only", DT_FLAG, 0, NULL },
 		{ NL80211_FREQUENCY_ATTR_IR_CONCURRENT, "ir_concurrent", DT_FLAG, 0, NULL },
 		{ NL80211_FREQUENCY_ATTR_NO_20MHZ, "no_20mhz", DT_FLAG, 0, NULL },
