@@ -36,6 +36,97 @@ uc_parse_config_t uc_default_parse_config = {
 	}
 };
 
+/*
+ * Optional allocation-origin tracking for gc-managed values.
+ *
+ * When the UCODE_VM_DEBUG_MEMORY_ALLOC environment variable is set, the ucode
+ * call stack of every array, object, closure and resource allocation that is
+ * registered with the vm value list is recorded. Whenever the garbage
+ * collector releases such a value directly, its captured allocation origin is
+ * printed, which helps to locate the source of values that only the cycle
+ * collector could reclaim.
+ */
+typedef struct {
+	const char *typename;
+	char *stack;
+} uc_memdbg_trace_t;
+
+static struct lh_table *uc_memdbg_table = NULL;
+
+static bool
+uc_memdbg_enabled(void)
+{
+	static int state = -1;
+
+	if (state < 0)
+		state = getenv("UCODE_VM_DEBUG_MEMORY_ALLOC") ? 1 : 0;
+
+	return state == 1;
+}
+
+static void
+uc_memdbg_free_entry(struct lh_entry *e)
+{
+	uc_memdbg_trace_t *trace = lh_entry_v(e);
+
+	free(trace->stack);
+	free(trace);
+}
+
+static void
+uc_memdbg_track(uc_vm_t *vm, uc_value_t *uv)
+{
+	uc_memdbg_trace_t *trace;
+
+	if (!uc_memdbg_enabled())
+		return;
+
+	if (!uc_memdbg_table) {
+		uc_memdbg_table = lh_kptr_table_new(1024, uc_memdbg_free_entry);
+
+		if (!uc_memdbg_table)
+			return;
+	}
+
+	trace = xalloc(sizeof(*trace));
+	trace->typename = ucv_typename(uv);
+	trace->stack = uc_vm_capture_call_source(vm);
+
+	lh_table_insert(uc_memdbg_table, uv, trace);
+}
+
+static void
+uc_memdbg_untrack(uc_value_t *uv)
+{
+	if (!uc_memdbg_table)
+		return;
+
+	lh_table_delete(uc_memdbg_table, uv);
+}
+
+static void
+uc_memdbg_report(uc_value_t *uv)
+{
+	uc_memdbg_trace_t *trace;
+	struct lh_entry *e;
+
+	if (!uc_memdbg_table)
+		return;
+
+	e = lh_table_lookup_entry(uc_memdbg_table, uv);
+
+	if (!e)
+		return;
+
+	trace = lh_entry_v(e);
+
+	fprintf(stderr, "[ucode] gc released %s value %p, allocated at:\n%s",
+	        trace->typename, (void *)uv,
+	        trace->stack ? trace->stack : "  <no ucode call frame>\n");
+
+	lh_table_delete_entry(uc_memdbg_table, e);
+}
+
 uc_type_t
 ucv_type(uc_value_t *uv)
 {
@@ -379,6 +470,7 @@ ucv_free(uc_value_t *uv, bool retain)
 		if (ref && ref->prev && ref->next)
 			ucv_unref(ref);
 
+		uc_memdbg_untrack(uv);
 		free(uv);
 	}
 	else {
@@ -775,6 +867,7 @@ ucv_array_new_length(uc_vm_t *vm, size_t length)
 	if (vm) {
 		ucv_ref(&vm->values, &array->ref);
 		vm->alloc_refs++;
+		uc_memdbg_track(vm, &array->header);
 	}
 
 	return &array->header;
@@ -994,6 +1087,7 @@ ucv_object_new(uc_vm_t *vm)
 	if (vm) {
 		ucv_ref(&vm->values, &object->ref);
 		vm->alloc_refs++;
+		uc_memdbg_track(vm, &object->header);
 	}
 
 	return &object->header;
@@ -1239,6 +1333,7 @@ ucv_closure_new(uc_vm_t *vm, uc_function_t *function, bool arrow_fn)
 	if (vm) {
 		ucv_ref(&vm->values, &closure->ref);
 		vm->alloc_refs++;
+		uc_memdbg_track(vm, &closure->header);
 	}
 
 	uc_program_get(function->program);
@@ -1324,6 +1419,7 @@ ucv_resource_new_ex(uc_vm_t *vm, uc_resource_type_t *type, void **data, size_t u
 	if (vm && uvcount) {
 		ucv_ref_tail(&vm->values, &res->ref);
 		vm->alloc_refs++;
+		uc_memdbg_track(vm, &res->header);
 	}
 
 	return &res->header;
@@ -3101,6 +3197,11 @@ ucv_gc_common(uc_vm_t *vm, bool final)
 		val = (uc_value_t *)((uintptr_t)ref - offsetof(uc_array_t, ref));
 
 		if (val->type == UC_NULL) {
+			if (!final)
+				uc_memdbg_report(val);
+			else
+				uc_memdbg_untrack(val);
+
 			ucv_unref(ref);
 			free(val);
 		}

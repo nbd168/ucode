@@ -1318,6 +1318,57 @@ uc_vm_capture_stacktrace(uc_vm_t *vm, size_t i)
 	return stacktrace;
 }
 
+__hidden char *
+uc_vm_capture_call_source(uc_vm_t *vm)
+{
+	uc_function_t *function;
+	uc_callframe_t *frame;
+	uc_source_t *source;
+	uc_chunk_t *chunk;
+	uc_stringbuf_t *buf;
+	size_t i, off, srcpos, line;
+	const char *name;
+	char *rv;
+
+	if (vm->callframes.count == 0)
+		return NULL;
+
+	buf = xprintbuf_new();
+
+	for (i = vm->callframes.count; i > 0; i--) {
+		frame = &vm->callframes.entries[i - 1];
+
+		if (frame->closure) {
+			function = frame->closure->function;
+			source = uc_program_function_source(function);
+			chunk = uc_vm_frame_chunk(frame);
+
+			off = (frame->ip > chunk->entries) ? (frame->ip - chunk->entries) - 1 : 0;
+			srcpos = uc_program_function_srcpos(function, off);
+			line = uc_source_get_line(source, &srcpos);
+
+			if (function->name[0])
+				name = function->name;
+			else if (frame->closure->is_arrow)
+				name = "[arrow function]";
+			else
+				name = "[anonymous function]";
+
+			ucv_stringbuf_printf(buf, "  in %s (%s:%zu:%zu)\n",
+			                     name, source->filename, line, srcpos);
+		}
+		else if (frame->cfunction) {
+			ucv_stringbuf_printf(buf, "  in %s ([C])\n",
+			                     frame->cfunction->name);
+		}
+	}
+
+	rv = printbuf_length(buf) ? xstrdup(buf->buf) : NULL;
+	printbuf_free(buf);
+
+	return rv;
+}
+
 static uc_value_t *
 uc_vm_get_error_context(uc_vm_t *vm)
 {

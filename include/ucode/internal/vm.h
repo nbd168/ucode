@@ -20,6 +20,7 @@
 #define UCODE_INTERNAL_VM_H
 
 #include "ucode/vm.h"
+#include "ucode/internal/util.h"
 
 #define __insns \
 __insn(NOOP) \
@@ -113,5 +114,7 @@ uc_vm_is_strict(uc_vm_t *vm)
 {
 	return (vm->callframes.count && uc_vector_last(&vm->callframes)->strict);
 }
+
+__hidden char *uc_vm_capture_call_source(uc_vm_t *vm);
 
 #endif /* UCODE_INTERNAL_VM_H */
