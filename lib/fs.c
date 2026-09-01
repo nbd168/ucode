@@ -790,7 +790,11 @@ uc_fs_close(uc_vm_t *vm, size_t nargs)
 	if (!fp || !*fp)
 		err_return(EBADF);
 
-	fclose(*fp);
+	if (fclose(*fp) != 0) {
+		*fp = NULL;
+		err_return(errno);
+	}
+
 	*fp = NULL;
 
 	return ucv_boolean_new(true);
@@ -3173,7 +3177,8 @@ uc_fs_writefile(uc_vm_t *vm, size_t nargs)
 			err = errno;
 	}
 
-	fclose(fp);
+	if (fclose(fp) != 0 && !err)
+		err = errno;
 
 	if (err)
 		err_return(err);
