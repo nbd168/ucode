@@ -864,15 +864,29 @@ ucv_to_blob(const char *name, uc_value_t *val, struct blob_buf *blob)
 		break;
 
 	case UC_ARRAY:
+		if (ucv_is_marked(val)) {
+			blobmsg_add_field(blob, BLOBMSG_TYPE_UNSPEC, name, NULL, 0);
+			break;
+		}
+
+		ucv_set_mark(val);
 		c = blobmsg_open_array(blob, name);
 		ucv_array_to_blob(val, blob);
 		blobmsg_close_array(blob, c);
+		ucv_clear_mark(val);
 		break;
 
 	case UC_OBJECT:
+		if (ucv_is_marked(val)) {
+			blobmsg_add_field(blob, BLOBMSG_TYPE_UNSPEC, name, NULL, 0);
+			break;
+		}
+
+		ucv_set_mark(val);
 		c = blobmsg_open_table(blob, name);
 		ucv_object_to_blob(val, blob);
 		blobmsg_close_table(blob, c);
+		ucv_clear_mark(val);
 		break;
 
 	default:
