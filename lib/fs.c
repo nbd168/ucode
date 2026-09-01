@@ -262,10 +262,13 @@ uc_fs_read_common(uc_vm_t *vm, size_t nargs, FILE **fp)
 
 		len = fread(p, 1, lsize, *fp);
 
-		if (ferror(*fp)) {
+		if (len == 0 && ferror(*fp)) {
+			clearerr(*fp);
 			free(p);
 			err_return(errno);
 		}
+
+		clearerr(*fp);
 	}
 	else {
 		err_return(EINVAL);
