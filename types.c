@@ -534,7 +534,7 @@ ucv_string_length(uc_value_t *uv)
 
 	if ((pv & 3) == UC_STRING)
 		return (pv & 0xff) >> 2;
-	else if (uv != NULL && uv->type == UC_STRING)
+	else if ((pv & 3) == UC_NULL && uv != NULL && uv->type == UC_STRING)
 		return str->length;
 
 	return 0;
