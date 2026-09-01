@@ -598,6 +598,13 @@ parse_reply(uc_vm_t *vm, uc_value_t *res_obj, const unsigned char *msg, size_t l
 			ucv_array_push(item, ucv_string_new(dname)); /* mail addr */
 			cp += n;
 
+			if (cp + 20 > ns_rr_rdata(rr) + rdlen) {
+				set_error(EBADMSG, "SOA record too short");
+				ucv_put(item);
+
+				return -1;
+			}
+
 			ucv_array_push(item, ucv_int64_new(ns_get32(cp))); /* serial */
 			cp += 4;
 
