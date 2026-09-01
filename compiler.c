@@ -1296,11 +1296,15 @@ uc_compiler_compile_delete(uc_compiler_t *compiler)
 
 	uc_compiler_parse_precedence(compiler, P_UNARY);
 
-	type = chunk->entries[compiler->last_insn];
+	type = (compiler->last_insn < chunk->count)
+		? chunk->entries[compiler->last_insn] : 0;
 
-	if (type != I_LVAL)
+	if (type != I_LVAL) {
 		uc_compiler_syntax_error(compiler, 0,
 			"expecting a property access expression");
+
+		return;
+	}
 
 	chunk->entries[compiler->last_insn] = I_DELETE;
 }
@@ -1807,7 +1811,8 @@ uc_compiler_compile_call(uc_compiler_t *compiler)
 	bool mcall;
 
 	/* determine the kind of the lhs */
-	type = chunk->entries[compiler->last_insn];
+	type = (compiler->last_insn < chunk->count)
+		? chunk->entries[compiler->last_insn] : 0;
 	mcall = (type == I_LVAL);
 
 	if (mcall) {
