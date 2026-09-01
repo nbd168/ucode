@@ -1756,8 +1756,14 @@ uc_compiler_compile_paren(uc_compiler_t *compiler)
 			if (uc_compiler_compile_var_or_arrowfn(compiler, varname) == TK_LABEL) {
 				/* parse operand and rhs */
 				while (P_TERNARY <= uc_compiler_parse_rule(compiler->parser->curr.type)->precedence) {
+					uc_parse_rule_t *rule =
+						uc_compiler_parse_rule(compiler->parser->curr.type);
+
+					if (!rule->infix)
+						break;
+
 					uc_compiler_parse_advance(compiler);
-					uc_compiler_parse_rule(compiler->parser->prev.type)->infix(compiler);
+					rule->infix(compiler);
 				}
 			}
 
