@@ -223,7 +223,9 @@ write_vallist(uc_value_list_t *vallist, FILE *file)
 
 	/* write data */
 	write_u32(vallist->dsize, file);
-	fwrite(vallist->data, 1, vallist->dsize, file);
+
+	if (vallist->dsize)
+		fwrite(vallist->data, 1, vallist->dsize, file);
 }
 
 enum {
@@ -484,6 +486,45 @@ read_u64(FILE *file, uint64_t *n, const char *subj, char **errp)
 }
 
 static bool
+read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp);
+
+/* A count or length taken from the file sizes an allocation, and every item
+ * it counts is then read from that same file, so a value larger than the
+ * bytes remaining cannot be honest. Refusing it here keeps a crafted 32-bit
+ * field from reaching xalloc(), which aborts the process rather than
+ * returning. */
+static bool
+read_count(FILE *file, size_t *n, size_t itemsize, const char *subj, char **errp)
+{
+	long pos, end;
+
+	if (!read_size_t(file, n, sizeof(uint32_t), subj, errp))
+		return false;
+
+	pos = ftell(file);
+
+	if (pos < 0 || fseek(file, 0, SEEK_END) != 0)
+		return true;
+
+	end = ftell(file);
+
+	if (fseek(file, pos, SEEK_SET) != 0)
+		return false;
+
+	if (end >= pos && *n > (size_t)(end - pos) / (itemsize ? itemsize : 1)) {
+		if (errp)
+			xasprintf(errp, "Invalid count %zu for %s at offset %ld\n",
+			          *n, subj, pos);
+
+		return false;
+	}
+
+	return true;
+}
+
+#define read_length(file, n, subj, errp) read_count(file, n, 1, subj, errp)
+
+static bool
 read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp)
 {
 	union { uint8_t u8; uint16_t u16; uint32_t u32; uint64_t u64; } nval;
@@ -525,7 +566,7 @@ _read_vector(FILE *file, void *ptr, size_t itemsize, const char *subj, char **er
 
 	snprintf(subjbuf, sizeof(subjbuf), "%s vector size", subj);
 
-	if (!read_size_t(file, &vec->count, sizeof(uint32_t), subjbuf, errp))
+	if (!read_count(file, &vec->count, itemsize, subjbuf, errp))
 		return false;
 
 	vec->data = xcalloc(vec->count, itemsize);
@@ -572,7 +613,7 @@ read_vallist(FILE *file, uc_value_list_t *vallist, const char *subj, char **errp
 	/* read index */
 	snprintf(subjbuf, sizeof(subjbuf), "%s index size", subj);
 
-	if (!read_size_t(file, &vallist->isize, sizeof(uint32_t), subjbuf, errp))
+	if (!read_count(file, &vallist->isize, sizeof(uint64_t), subjbuf, errp))
 		goto out;
 
 	vallist->index = xcalloc(sizeof(vallist->index[0]), vallist->isize);
@@ -587,7 +628,7 @@ read_vallist(FILE *file, uc_value_list_t *vallist, const char *subj, char **errp
 	/* read data */
 	snprintf(subjbuf, sizeof(subjbuf), "%s data size", subj);
 
-	if (!read_size_t(file, &vallist->dsize, sizeof(uint32_t), subjbuf, errp))
+	if (!read_length(file, &vallist->dsize, subjbuf, errp))
 		goto out;
 
 	vallist->data = xalloc(vallist->dsize);
@@ -625,7 +666,7 @@ read_exports(FILE *file, uc_source_t *source, uint32_t flags, const char *subj, 
 		/* read export count */
 		snprintf(subjbuf, sizeof(subjbuf), "%s count", subj);
 
-		if (!read_size_t(file, &num_exports, sizeof(uint32_t), subjbuf, errp))
+		if (!read_count(file, &num_exports, sizeof(uint32_t), subjbuf, errp))
 			return false;
 
 		/* read export symbol names */
@@ -688,11 +729,12 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 	size_t len, count;
 
 	if (flags & UC_PROGRAM_F_SOURCEINFO) {
-		if (!read_size_t(input->fp, &count, sizeof(uint32_t), "amount of source entries", errp))
+		if (!read_count(input->fp, &count, sizeof(uint32_t) * 2,
+		                "amount of source entries", errp))
 			return NULL;
 
 		while (count > 0) {
-			if (!read_size_t(input->fp, &len, sizeof(uint32_t), "sourceinfo filename length", errp))
+			if (!read_length(input->fp, &len, "sourceinfo filename length", errp))
 				return NULL;
 
 			path = xalloc(len + 1);
@@ -703,7 +745,7 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 				return NULL;
 			}
 
-			if (!read_size_t(input->fp, &len, sizeof(uint32_t), "sourceinfo code buffer length", errp)) {
+			if (!read_length(input->fp, &len, "sourceinfo code buffer length", errp)) {
 				free(path);
 
 				return NULL;
@@ -773,7 +815,8 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 	if (flags & UC_FUNCTION_F_HAS_EXCEPTIONS) {
 		snprintf(subjbuf, sizeof(subjbuf), "%s exception ranges count", subj);
 
-		if (!read_size_t(file, &chunk->ehranges.count, sizeof(uint32_t), subjbuf, errp))
+		if (!read_count(file, &chunk->ehranges.count,
+		                sizeof(uint32_t) * 4, subjbuf, errp))
 			goto out;
 
 		chunk->ehranges.entries = xcalloc(
@@ -798,7 +841,8 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 	if (flags & UC_FUNCTION_F_HAS_VARDBG) {
 		snprintf(subjbuf, sizeof(subjbuf), "%s variable scopes count", subj);
 
-		if (!read_size_t(file, &chunk->debuginfo.variables.count, sizeof(uint32_t), subjbuf, errp))
+		if (!read_count(file, &chunk->debuginfo.variables.count,
+		                sizeof(uint32_t) * 4, subjbuf, errp))
 			goto out;
 
 		chunk->debuginfo.variables.entries = xcalloc(
@@ -859,11 +903,11 @@ out:
 static bool
 read_function(FILE *file, uc_program_t *program, size_t idx, char **errp)
 {
-	size_t nargs, nupvals, srcidx, srcpos;
+	size_t nargs, nupvals, srcidx, srcpos, namelen = 0;
 	char subjbuf[64], *name = NULL;
 	uc_function_t *func = NULL;
 	uc_source_t *source;
-	uint32_t flags, u32;
+	uint32_t flags;
 
 	snprintf(subjbuf, sizeof(subjbuf), "function #%zu flags", idx);
 
@@ -873,14 +917,14 @@ read_function(FILE *file, uc_program_t *program, size_t idx, char **errp)
 	if (flags & UC_FUNCTION_F_HAS_NAME) {
 		snprintf(subjbuf, sizeof(subjbuf), "function #%zu name length", idx);
 
-		if (!read_u32(file, &u32, subjbuf, errp))
+		if (!read_length(file, &namelen, subjbuf, errp))
 			goto out;
 
-		name = xalloc(u32 + 1);
+		name = xalloc(namelen + 1);
 
 		snprintf(subjbuf, sizeof(subjbuf), "function #%zu name", idx);
 
-		if (!read_string(file, name, u32, subjbuf, errp))
+		if (!read_string(file, name, namelen, subjbuf, errp))
 			goto out;
 	}
 
