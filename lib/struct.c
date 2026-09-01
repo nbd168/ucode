@@ -2525,7 +2525,7 @@ grow_buffer(uc_vm_t *vm, void **buf, size_t *bufsz, size_t length)
 {
 	const size_t overhead = sizeof(uc_string_t) + 1;
 
-	if (length > *bufsz) {
+	if (length > *bufsz || *buf == NULL) {
 		size_t old_size = *bufsz;
 		size_t new_size = (length + 7u) & ~7u;
 
