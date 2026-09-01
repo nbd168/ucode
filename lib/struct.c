@@ -3108,9 +3108,9 @@ static uc_value_t *
 uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
                  const char *buf, long long pos, size_t *rem, bool single)
 {
+	size_t ncode, off, total, fieldoff = 0;
 	uc_value_t *result;
 	formatcode_t *code;
-	size_t ncode, off;
 	ssize_t size, n;
 
 	if (pos < 0)
@@ -3120,7 +3120,8 @@ uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
 		return NULL;
 
 	buf += pos;
-	*rem -= pos;
+	total = *rem - (size_t)pos;
+	*rem = total;
 
 	result = single ? NULL : ucv_array_new(vm);
 
@@ -3128,23 +3129,30 @@ uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
 	     ncode < state->ncodes;
 	     code = &state->codes[++ncode]) {
 		const formatdef_t *e = code->fmtdef;
-		const char *res = buf + code->offset + off;
 		ssize_t j = code->repeat;
+		const char *res;
+
+		fieldoff = code->offset + off;
 
 		while (j--) {
 			uc_value_t *v = NULL;
 
 			size = code->size;
 
+			if (fieldoff > total)
+				goto fail;
+
 			if (e->format == '*' || e->format == 'X' || e->format == 'Z') {
-				if (size == -1 || (size_t)size > *rem)
-					size = *rem;
+				if (size == -1 || (size_t)size > total - fieldoff)
+					size = total - fieldoff;
 
 				off += size;
 			}
-			else if (size >= 0 && (size_t)size > *rem) {
+			else if (size < 0 || (size_t)size > total - fieldoff) {
 				goto fail;
 			}
+
+			res = buf + fieldoff;
 
 			if (e->format == 's' || e->format == '*') {
 				v = ucv_string_new_length(res, size);
@@ -3170,8 +3178,8 @@ uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
 			if (v == NULL)
 				goto fail;
 
-			res += size;
-			*rem -= size;
+			fieldoff += size;
+			*rem = total - fieldoff;
 
 			if (single)
 				return v;
