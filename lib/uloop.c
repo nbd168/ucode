@@ -1440,8 +1440,8 @@ patch_devnull(int fd, bool write)
 	int devnull = open("/dev/null", write ? O_WRONLY : O_RDONLY);
 
 	if (devnull != -1) {
-		dup2(fd, devnull);
-		close(fd);
+		dup2(devnull, fd);
+		close(devnull);
 	}
 
 	return devnull;
