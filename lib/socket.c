@@ -238,6 +238,9 @@ static bool
 strbuf_grow(uc_stringbuf_t *sb, size_t size)
 {
 	if (size > 0) {
+		if (size > (size_t)INT_MAX - sizeof(uc_string_t))
+			err_return(EOVERFLOW, "Requested size too large");
+
 		if (printbuf_memset(sb, sizeof(uc_string_t) + size - 1, '\0', 1))
 			err_return(ENOMEM, "Out of memory");
 	}
