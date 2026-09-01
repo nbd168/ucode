@@ -317,8 +317,10 @@ ucv_free(uc_value_t *uv, bool retain)
 			values = ucv_resource_values(res);
 
 			if (values) {
-				for (i = 0; i < (size_t)res->uvcount + res->hasproto; i++)
+				for (i = 0; i < (size_t)res->uvcount + res->hasproto; i++) {
 					ucv_put_value(values[i], retain);
+					values[i] = NULL;
+				}
 			}
 
 			if (res->type && res->type->free)
