@@ -3767,7 +3767,7 @@ uc_compiler_compile_module_source(uc_compiler_t *compiler, const char *modname, 
 
 			/* emit import instruction... */
 			uc_compiler_emit_insn(compiler, compiler->parser->prev.pos, I_IMPORT);
-			uc_compiler_emit_u32(compiler, 0, source->exports.count | (0xffff << 16));
+			uc_compiler_emit_u32(compiler, 0, source->exports.count | (0xffffu << 16));
 
 			/* ... followed by first module export offset ... */
 			uc_compiler_emit_u16(compiler, 0, source->exports.offset);
