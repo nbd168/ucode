@@ -1349,11 +1349,21 @@ uc_ubus_call_common(uc_vm_t *vm, uc_ubus_connection_t *c, uc_ubus_call_res_t *re
 		ucv_object_to_blob(funargs, &c->buf);
 
 	if (fd) {
-		fd_val = get_fd(vm, fd, NULL);
+		bool fd_handle = false;
+
+		fd_val = get_fd(vm, fd, &fd_handle);
 
 		if (fd_val < 0)
 			errval_return(UBUS_STATUS_INVALID_ARGUMENT,
 			              "Invalid file descriptor argument");
+
+		if (fd_handle) {
+			fd_val = dup(fd_val);
+
+			if (fd_val < 0)
+				errval_return(UBUS_STATUS_UNKNOWN_ERROR,
+				              "Unable to duplicate file descriptor");
+		}
 	}
 
 	res->mret = (ret_mode == RET_MODE_MULTIPLE);
@@ -1537,11 +1547,21 @@ uc_ubus_defer_common(uc_vm_t *vm, uc_ubus_connection_t *c, uc_ubus_call_res_t *r
 		ucv_object_to_blob(funargs, &c->buf);
 
 	if (fd) {
-		fd_val = get_fd(vm, fd, NULL);
+		bool fd_handle = false;
+
+		fd_val = get_fd(vm, fd, &fd_handle);
 
 		if (fd_val < 0)
 			errval_return(UBUS_STATUS_INVALID_ARGUMENT,
 			              "Invalid file descriptor argument");
+
+		if (fd_handle) {
+			fd_val = dup(fd_val);
+
+			if (fd_val < 0)
+				errval_return(UBUS_STATUS_UNKNOWN_ERROR,
+				              "Unable to duplicate file descriptor");
+		}
 	}
 
 	res->res = ucv_resource_create_ex(vm, "ubus.deferred", (void **)&defer, __DEFER_RES_MAX, sizeof(*defer));
@@ -1955,15 +1975,24 @@ static uc_value_t *
 uc_ubus_request_set_fd(uc_vm_t *vm, size_t nargs)
 {
 	uc_ubus_request_t *callctx = uc_fn_thisval("ubus.request");
+	bool handle = false;
 	int fd;
 
 	if (!callctx)
 		err_return(UBUS_STATUS_INVALID_ARGUMENT, "Invalid call context");
 
-	fd = get_fd(vm, uc_fn_arg(0), NULL);
+	fd = get_fd(vm, uc_fn_arg(0), &handle);
 
 	if (fd < 0)
 		err_return(UBUS_STATUS_INVALID_ARGUMENT, "Invalid file descriptor");
+
+	if (handle) {
+		fd = dup(fd);
+
+		if (fd < 0)
+			err_return(UBUS_STATUS_UNKNOWN_ERROR,
+			           "Unable to duplicate file descriptor");
+	}
 
 	ubus_request_set_fd(callctx->ctx, &callctx->req, fd);
 
