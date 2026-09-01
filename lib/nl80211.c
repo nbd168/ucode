@@ -1344,6 +1344,10 @@ uc_nl_parse_attrs(struct nl_msg *msg, char *base, const uc_nl_attr_spec_t *attrs
 		if (attrs[i].flags & DF_MULTIPLE) {
 			nla_nest = nla_nest_start(msg, attrs[i].attr);
 
+			if (!nla_nest)
+				return nla_parse_error(&attrs[i], vm, v,
+					"netlink message is full");
+
 			if (ucv_type(v) == UC_ARRAY) {
 				for (j = 0; j < ucv_array_length(v); j++) {
 					item = ucv_array_get(v, j);
@@ -1390,6 +1394,9 @@ uc_nl_parse_rta_nested(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *
 		return false;
 
 	nested_nla = nla_reserve(msg, spec->attr, nest->headsize);
+
+	if (!nested_nla)
+		return nla_parse_error(spec, vm, val, "netlink message is full");
 
 	if (!uc_nl_parse_attrs(msg, nla_data(nested_nla), nest->attrs, nest->nattrs, vm, val))
 		return false;
@@ -1761,6 +1768,11 @@ uc_nl_parse_attr(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *base, 
 				return nla_parse_error(spec, vm, val, "not an array");
 
 			nla = nla_reserve(msg, spec->attr, ucv_array_length(val) * dt_sizes[spec->type]);
+
+			if (!nla)
+				return nla_parse_error(spec, vm, val,
+					"netlink message is full");
+
 			s = nla_data(nla);
 
 			for (i = 0; i < ucv_array_length(val); i++) {
@@ -1892,6 +1904,11 @@ uc_nl_parse_attr(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *base, 
 				return nla_parse_error(spec, vm, val, "not an array");
 
 			nla = nla_reserve(msg, spec->attr, ucv_array_length(val) * nested->headsize);
+
+			if (!nla)
+				return nla_parse_error(spec, vm, val,
+					"netlink message is full");
+
 			s = nla_data(nla);
 
 			for (i = 0; i < ucv_array_length(val); i++) {
