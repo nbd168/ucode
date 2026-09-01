@@ -4271,6 +4271,7 @@ uc_compile_from_bytecode(uc_parse_config_t *config, uc_source_t *source, char **
 			xasprintf(errp, "Program file contains no entry function\n");
 
 		ucv_put(&prog->header);
+		prog = NULL;
 	}
 
 	return prog;
