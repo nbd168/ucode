@@ -2121,7 +2121,7 @@ uc_compiler_compile_funcexpr_common(uc_compiler_t *compiler, bool require_name)
 			uc_compiler_syntax_error(&fncompiler, fncompiler.parser->curr.pos,
 				"Expecting Label");
 
-			return;
+			break;
 		}
 	}
 
