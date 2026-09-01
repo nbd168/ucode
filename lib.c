@@ -4924,7 +4924,11 @@ uc_b64dec(uc_vm_t *vm, size_t nargs)
 	state = BYTE1;
 
 	/* memset the last expected output char to pre-grow the output buffer */
-	printbuf_memset(buf, off + (ucv_string_length(str) / 4) * 3, 0, 1);
+	if (printbuf_memset(buf, off + ((ucv_string_length(str) + 3) / 4) * 3, 0, 1)) {
+		printbuf_free(buf);
+
+		return NULL;
+	}
 
 	while ((ch = (unsigned char)*src++) != '\0') {
 		if (isspace(ch))	/* Skip whitespace anywhere. */
