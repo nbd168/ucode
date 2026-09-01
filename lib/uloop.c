@@ -855,7 +855,11 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 
 	ret = uloop_fd_add(&handle->fd, (unsigned int)f);
 	if (ret != 0) {
-		ucv_put(handle->cb.obj);
+		uc_value_t *obj = handle->cb.obj;
+
+		uc_uloop_cb_free(&handle->cb);
+		ucv_put(obj);
+
 		err_return(errno);
 	}
 
