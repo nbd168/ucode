@@ -494,6 +494,32 @@ read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp);
  * field from reaching xalloc(), which aborts the process rather than
  * returning. */
 static bool
+length_fits(FILE *file, size_t n, const char *subj, char **errp)
+{
+	long pos, end;
+
+	pos = ftell(file);
+
+	if (pos < 0 || fseek(file, 0, SEEK_END) != 0)
+		return true;
+
+	end = ftell(file);
+
+	if (fseek(file, pos, SEEK_SET) != 0)
+		return false;
+
+	if (end >= pos && n > (size_t)(end - pos)) {
+		if (errp)
+			xasprintf(errp, "Invalid length %zu for %s at offset %ld\n",
+			          n, subj, pos);
+
+		return false;
+	}
+
+	return true;
+}
+
+static bool
 read_count(FILE *file, size_t *n, size_t itemsize, const char *subj, char **errp)
 {
 	long pos, end;
@@ -682,13 +708,8 @@ read_exports(FILE *file, uc_source_t *source, uint32_t flags, const char *subj, 
 				snprintf(subjbuf, sizeof(subjbuf), "%s entry %zu of %zu name",
 						subj, i, num_exports);
 
-				if (len >= (size_t)INT_MAX) {
-					if (errp)
-						xasprintf(errp, "Invalid length %zu for %s\n",
-						          len, subjbuf);
-
+				if (!length_fits(file, len, subjbuf, errp))
 					return false;
-				}
 
 				buf = ucv_stringbuf_new();
 
@@ -970,7 +991,8 @@ uc_program_t *
 uc_program_load(uc_source_t *input, char **errp)
 {
 	uc_program_t *program = NULL;
-	uint32_t flags, nfuncs, i;
+	uint32_t flags, i;
+	size_t nfuncs;
 
 	if (!read_u32(input->fp, &i, "file magic", errp))
 		goto out;
@@ -1002,7 +1024,7 @@ uc_program_load(uc_source_t *input, char **errp)
 					  "exports", errp))
 		goto out;
 
-	if (!read_u32(input->fp, &nfuncs, "function count", errp))
+	if (!read_count(input->fp, &nfuncs, sizeof(uint32_t), "function count", errp))
 		goto out;
 
 	for (i = 0; i < nfuncs; i++)
