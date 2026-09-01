@@ -1763,7 +1763,7 @@ uc_uloop_task(uc_vm_t *vm, size_t nargs)
 	task->output.fd = outpipe[0];
 	task->output.cb = uc_uloop_task_output_cb;
 	task->output_cb = output_cb;
-	uloop_fd_add(&task->output, ULOOP_READ);
+	uloop_fd_add(&task->output, ULOOP_READ | ULOOP_BLOCKING);
 
 	if (input_cb) {
 		task->input_fd = inpipe[1];
