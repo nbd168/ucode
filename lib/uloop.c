@@ -1463,11 +1463,10 @@ uc_uloop_task_clear(uc_uloop_task_t *task)
 	if (task->input_fd >= 0) {
 		close(task->input_fd);
 		task->input_fd = -1;
-
-		uloop_fd_close(&task->output);
-		uloop_process_delete(&task->process);
 	}
 
+	uloop_fd_close(&task->output);
+	uloop_process_delete(&task->process);
 	uc_uloop_cb_free(&task->cb);
 }
 
