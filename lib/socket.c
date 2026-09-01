@@ -69,6 +69,11 @@
 
 #include "ucode/module.h"
 
+#ifndef CMSG_ALIGN
+/* glibc exposes CMSG_ALIGN() via <asm/sockios.h>; BSD and macOS do not. */
+# define CMSG_ALIGN(len) (((len) + sizeof(int) - 1) & ~(sizeof(int) - 1))
+#endif
+
 #if defined(__linux__)
 # include <linux/in6.h>
 # include <linux/if_packet.h>
@@ -4108,7 +4113,7 @@ uc_socket_inst_sendmsg(uc_vm_t *vm, size_t nargs)
 			}
 
 			msg.msg_controllen = (cmsg != NULL)
-				? (char *)cmsg - (char *)msg.msg_control + CMSG_SPACE(cmsg->cmsg_len)
+				? (char *)cmsg - (char *)msg.msg_control + CMSG_ALIGN(cmsg->cmsg_len)
 				: 0;
 		}
 	}
