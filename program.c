@@ -16,6 +16,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <limits.h>
 
 #include "ucode/internal/program.h"
 #include "ucode/internal/source.h"
@@ -640,8 +641,24 @@ read_exports(FILE *file, uc_source_t *source, uint32_t flags, const char *subj, 
 				snprintf(subjbuf, sizeof(subjbuf), "%s entry %zu of %zu name",
 						subj, i, num_exports);
 
+				if (len >= (size_t)INT_MAX) {
+					if (errp)
+						xasprintf(errp, "Invalid length %zu for %s\n",
+						          len, subjbuf);
+
+					return false;
+				}
+
 				buf = ucv_stringbuf_new();
-				printbuf_memset(buf, -1, 0, len + 1);
+
+				if (printbuf_memset(buf, -1, 0, len + 1)) {
+					printbuf_free(buf);
+
+					if (errp)
+						xasprintf(errp, "Out of memory reading %s\n", subjbuf);
+
+					return false;
+				}
 
 				if (!read_string(file, buf->buf + buf->bpos - len - 1, len, subjbuf, errp))
 				{
