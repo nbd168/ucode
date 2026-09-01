@@ -2683,13 +2683,19 @@ b64dec(char *dest, size_t *dest_len, const char *src, size_t src_len,
 
 		case BYTE2:
 			dest[dest_off++] |= val >> 4;
-			dest[dest_off] = (val & 0x0f) << 4;
+
+			if (dest_off < *dest_len)
+				dest[dest_off] = (val & 0x0f) << 4;
+
 			state = BYTE3;
 			break;
 
 		case BYTE3:
 			dest[dest_off++] |= val >> 2;
-			dest[dest_off] = (val & 0x03) << 6;
+
+			if (dest_off < *dest_len)
+				dest[dest_off] = (val & 0x03) << 6;
+
 			state = BYTE4;
 			break;
 
@@ -2768,6 +2774,16 @@ b64dec(char *dest, size_t *dest_len, const char *src, size_t src_len,
 
 static const char Base64[] =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static bool
+b64blank(const char *src, size_t src_len)
+{
+	for (size_t i = 0; i < src_len; i++)
+		if (!isspace((unsigned char)src[i]))
+			return false;
+
+	return true;
+}
 
 static size_t
 b64len(const char *src, size_t src_len)
@@ -3031,12 +3047,22 @@ uc_pack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state, size_t argoff,
 				n = ucv_string_length(v);
 				p = ucv_string_get(v);
 
-				size_t len = (size == -1) ? SIZE_MAX : (size_t)size;
+				size_t len = b64len(p, n);
 				const char *err = NULL;
+
+				if (len == 0 && !b64blank(p, n)) {
+					uc_vm_raise_exception(vm, EXCEPTION_TYPE,
+						"Invalid base64 string");
+
+					return false;
+				}
+
+				if (size >= 0 && (size_t)size < len)
+					len = (size_t)size;
 
 				if (!b64dec(res, &len, p, n, &err)) {
 					uc_vm_raise_exception(vm, EXCEPTION_TYPE,
-						"Invalid base64 string: %s", err);
+						"Invalid base64 string: %s", err ? err : "malformed");
 
 					return false;
 				}
