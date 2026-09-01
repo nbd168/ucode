@@ -941,7 +941,7 @@ uc_compiler_declare_local(uc_compiler_t *compiler, uc_value_t *name, bool consta
 		str2 = ucv_string_get(locals->entries[i - 1].name);
 		len2 = ucv_string_length(locals->entries[i - 1].name);
 
-		if (len1 == len2 && !strcmp(str1, str2)) {
+		if (str1 && str2 && len1 == len2 && !memcmp(str1, str2, len1)) {
 			if (locals->entries[i - 1].funcstub) {
 				uc_compiler_syntax_error(compiler, compiler->parser->prev.pos,
 					"Variable '%s' redeclared", str2);
