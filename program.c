@@ -695,7 +695,7 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 			if (!read_size_t(input->fp, &len, sizeof(uint32_t), "sourceinfo filename length", errp))
 				return NULL;
 
-			path = xalloc(len);
+			path = xalloc(len + 1);
 
 			if (!read_string(input->fp, path, len, "sourceinfo filename", errp)) {
 				free(path);
@@ -876,7 +876,7 @@ read_function(FILE *file, uc_program_t *program, size_t idx, char **errp)
 		if (!read_u32(file, &u32, subjbuf, errp))
 			goto out;
 
-		name = xalloc(u32);
+		name = xalloc(u32 + 1);
 
 		snprintf(subjbuf, sizeof(subjbuf), "function #%zu name", idx);
 
