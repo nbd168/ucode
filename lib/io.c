@@ -559,7 +559,10 @@ uc_io_read(uc_vm_t *vm, size_t nargs)
 	if (len > SSIZE_MAX)
 		len = SSIZE_MAX;
 
-	buf = xalloc(len);
+	buf = calloc(1, len);
+
+	if (!buf)
+		err_return(ENOMEM);
 
 	rlen = read(fd, buf, len);
 
