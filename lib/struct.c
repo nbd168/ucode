@@ -1330,7 +1330,7 @@ native_unpack_ulonglong(uc_vm_t *vm, const char *p, const formatdef_t *f)
 static uc_value_t *
 native_unpack_bool(uc_vm_t *vm, const char *p, const formatdef_t *f)
 {
-	bool x = false;
+	uint8_t x;
 
 	memcpy(&x, p, sizeof(x));
 
