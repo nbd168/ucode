@@ -429,6 +429,9 @@ uc_compiler_parse_precedence_for_token(uc_compiler_t *compiler, uc_precedence_t 
 			uc_compiler_syntax_error(compiler, compiler->parser->curr.pos, "Expecting ';' or binary operator");
 			uc_compiler_parse_advance(compiler);
 
+			uc_compiler_backpatch(compiler, compiler->patchlist->depth, 0);
+			uc_compiler_exprstack_pop(compiler);
+
 			return;
 		}
 
