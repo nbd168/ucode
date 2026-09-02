@@ -1,0 +1,44 @@
+The RS485 mode ioctls need a serial driver that implements them, which a
+pseudo terminal does not, so both calls report an error there and leave it
+in serial.error(). A non terminal descriptor fails the same way. An
+argument that is neither an object nor a boolean is rejected before any
+ioctl happens.
+
+-- Testcase --
+import * as serial from 'serial';
+import { open } from 'fs';
+
+let f = open('/dev/ptmx', 'r+');
+print(serial.getrs485(f) == null, "\n");
+print(serial.error() != null, "\n");
+
+print(serial.setrs485(f, { enabled: true, rts_on_send: true }) == null, "\n");
+print(serial.error() != null, "\n");
+
+print(serial.setrs485(f, true) == null, "\n");
+print(serial.error() != null, "\n");
+
+print(serial.setrs485(f, "yes") == null, "\n");
+print(serial.error(), "\n");
+
+let g = open('/dev/null', 'r');
+print(serial.getrs485(g) == null, "\n");
+print(serial.error() != null, "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+true
+true
+true
+true
+true
+true
+true
+Invalid argument
+true
+true
+-- End --

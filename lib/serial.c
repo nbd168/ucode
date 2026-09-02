@@ -49,6 +49,15 @@
 #define TIOCINQ FIONREAD
 #endif
 
+#ifdef __linux__
+#ifndef SER_RS485_RX_DURING_TX
+#define SER_RS485_RX_DURING_TX (1 << 4)
+#endif
+#ifndef SER_RS485_TERMINATE_BUS
+#define SER_RS485_TERMINATE_BUS (1 << 5)
+#endif
+#endif
+
 #define err_return(err) do { \
 	uc_vm_registry_set(vm, "serial.last_error", ucv_int64_new(err)); \
 	return NULL; \
@@ -977,6 +986,110 @@ uc_serial_lowlatency(uc_vm_t *vm, size_t nargs)
 
 	return ucv_boolean_new(true);
 }
+
+static uc_value_t *
+rs485_to_object(uc_vm_t *vm, struct serial_rs485 *rs)
+{
+	uc_value_t *rv = ucv_object_new(vm);
+
+	ucv_object_add(rv, "enabled",
+		ucv_boolean_new(rs->flags & SER_RS485_ENABLED));
+	ucv_object_add(rv, "rts_on_send",
+		ucv_boolean_new(rs->flags & SER_RS485_RTS_ON_SEND));
+	ucv_object_add(rv, "rts_after_send",
+		ucv_boolean_new(rs->flags & SER_RS485_RTS_AFTER_SEND));
+	ucv_object_add(rv, "rx_during_tx",
+		ucv_boolean_new(rs->flags & SER_RS485_RX_DURING_TX));
+	ucv_object_add(rv, "terminate_bus",
+		ucv_boolean_new(rs->flags & SER_RS485_TERMINATE_BUS));
+	ucv_object_add(rv, "delay_before",
+		ucv_uint64_new(rs->delay_rts_before_send));
+	ucv_object_add(rv, "delay_after",
+		ucv_uint64_new(rs->delay_rts_after_send));
+
+	return rv;
+}
+
+static void
+rs485_flag_apply(uc_value_t *opts, const char *name, uint32_t *flags, uint32_t bit)
+{
+	uc_value_t *v = ucv_object_get(opts, name, NULL);
+
+	if (!v)
+		return;
+
+	if (ucv_is_truish(v))
+		*flags |= bit;
+	else
+		*flags &= ~bit;
+}
+
+static uc_value_t *
+uc_serial_getrs485(uc_vm_t *vm, size_t nargs)
+{
+	struct serial_rs485 rs = { 0 };
+	int fd;
+
+	fd = get_fd(vm, uc_fn_arg(0));
+
+	if (fd < 0)
+		err_return(EBADF);
+
+	if (ioctl(fd, TIOCGRS485, &rs) != 0)
+		err_return(errno);
+
+	return rs485_to_object(vm, &rs);
+}
+
+static uc_value_t *
+uc_serial_setrs485(uc_vm_t *vm, size_t nargs)
+{
+	uc_value_t *opts = uc_fn_arg(1);
+	uc_value_t *v;
+	struct serial_rs485 rs = { 0 };
+	int fd;
+
+	fd = get_fd(vm, uc_fn_arg(0));
+
+	if (fd < 0)
+		err_return(EBADF);
+
+	if (ucv_type(opts) != UC_OBJECT && ucv_type(opts) != UC_BOOLEAN)
+		err_return(EINVAL);
+
+	if (ioctl(fd, TIOCGRS485, &rs) != 0)
+		err_return(errno);
+
+	if (ucv_type(opts) == UC_BOOLEAN) {
+		if (ucv_is_truish(opts))
+			rs.flags |= SER_RS485_ENABLED;
+		else
+			rs.flags &= ~SER_RS485_ENABLED;
+	}
+	else {
+		rs485_flag_apply(opts, "enabled", &rs.flags, SER_RS485_ENABLED);
+		rs485_flag_apply(opts, "rts_on_send", &rs.flags, SER_RS485_RTS_ON_SEND);
+		rs485_flag_apply(opts, "rts_after_send", &rs.flags, SER_RS485_RTS_AFTER_SEND);
+		rs485_flag_apply(opts, "rx_during_tx", &rs.flags, SER_RS485_RX_DURING_TX);
+		rs485_flag_apply(opts, "terminate_bus", &rs.flags, SER_RS485_TERMINATE_BUS);
+
+		v = ucv_object_get(opts, "delay_before", NULL);
+		if (v) rs.delay_rts_before_send = ucv_to_unsigned(v);
+
+		v = ucv_object_get(opts, "delay_after", NULL);
+		if (v) rs.delay_rts_after_send = ucv_to_unsigned(v);
+	}
+
+	if (ioctl(fd, TIOCSRS485, &rs) != 0)
+		err_return(errno);
+
+	memset(&rs, 0, sizeof(rs));
+
+	if (ioctl(fd, TIOCGRS485, &rs) != 0)
+		err_return(errno);
+
+	return rs485_to_object(vm, &rs);
+}
 #endif
 
 static const uc_function_list_t global_fns[] = {
@@ -1002,6 +1115,8 @@ static const uc_function_list_t global_fns[] = {
 	{ "getinfo",        uc_serial_getinfo },
 	{ "setinfo",        uc_serial_setinfo },
 	{ "lowlatency",     uc_serial_lowlatency },
+	{ "getrs485",       uc_serial_getrs485 },
+	{ "setrs485",       uc_serial_setrs485 },
 #endif
 };
 
