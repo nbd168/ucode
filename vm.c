@@ -1912,7 +1912,7 @@ uc_vm_value_arith(uc_vm_t *vm, uc_vm_insn_t operation, uc_value_t *value, uc_val
 
 		case I_DIV:
 			if (d2 == 0.0)
-				rv = ucv_double_new(INFINITY);
+				rv = ucv_double_new(d1 / d2);
 			else if (isnan(d2))
 				rv = ucv_double_new(NAN);
 			else if (!isfinite(d2))
@@ -2007,7 +2007,10 @@ uc_vm_value_arith(uc_vm_t *vm, uc_vm_insn_t operation, uc_value_t *value, uc_val
 
 		case I_DIV:
 			if (n2 == 0) {
-				rv = ucv_double_new(INFINITY);
+				if (n1 == 0 && !u1)
+					rv = ucv_double_new(NAN);
+				else
+					rv = ucv_double_new((n1 < 0) ? -INFINITY : INFINITY);
 			}
 			else if (n1 == INT64_MIN && n2 == -1) {
 				/* the mathematical result 2^63 only fits into uint64_t;
