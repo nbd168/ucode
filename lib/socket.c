@@ -86,7 +86,7 @@
 # endif
 
 # ifndef SO_TIMESTAMPNS_OLD
-#  define SO_TIMESTAMPNS_OLD SO_TIMESTAMP
+#  define SO_TIMESTAMPNS_OLD SO_TIMESTAMPNS
 # endif
 #endif
 
