@@ -2371,11 +2371,14 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	 * @property {number} ULOOP_WRITE - File or socket is writable.
 	 * @property {number} ULOOP_EDGE_TRIGGER - Enable edge-triggered event mode.
 	 * @property {number} ULOOP_BLOCKING - Do not make descriptor non-blocking.
+	 * @property {number} ULOOP_ERROR_CB - Deliver the error state to the
+	 * callback instead of removing the descriptor from the event loop.
 	 */
 	ADD_CONST(ULOOP_READ);
 	ADD_CONST(ULOOP_WRITE);
 	ADD_CONST(ULOOP_EDGE_TRIGGER);
 	ADD_CONST(ULOOP_BLOCKING);
+	ADD_CONST(ULOOP_ERROR_CB);
 
 	uc_type_declare(vm, "uloop.timer", timer_fns, close_timer);
 	uc_type_declare(vm, "uloop.handle", handle_fns, close_handle);
