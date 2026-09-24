@@ -92,6 +92,16 @@ limitations under the License.
 
 #define NL80211_CMDS_BITMAP_SIZE	DIV_ROUND_UP(NL80211_CMD_MAX + 1, 32)
 
+#define NL80211_EVSOCK_RCVBUF_INIT	(1024 * 1024)
+#define NL80211_EVSOCK_RCVBUF_MAX	(8 * 1024 * 1024)
+
+enum {
+	LISTENER_SLOT_RES,
+	LISTENER_SLOT_CB,
+	LISTENER_SLOT_OVERRUN_CB,
+	LISTENER_SLOTS
+};
+
 static struct {
 	int code;
 	char *msg;
@@ -2124,6 +2134,8 @@ static struct {
 	struct nl_cache *cache;
 	struct uloop_fd evsock_fd;
 	struct nl_cb *evsock_cb;
+	struct uloop_timeout overrun_timer;
+	int rcvbuf;
 } nl80211_conn;
 
 typedef enum {
@@ -2538,9 +2550,9 @@ cb_listener_event(struct nl_msg *msg, void *arg)
 	if (!nl80211_conn.evsock_fd.registered || !vm)
 		return NL_SKIP;
 
-	for (size_t i = 0; i < ucv_array_length(listener_registry); i += 2) {
-		uc_value_t *this = ucv_array_get(listener_registry, i);
-		uc_value_t *func = ucv_array_get(listener_registry, i + 1);
+	for (size_t i = 0; i < ucv_array_length(listener_registry); i += LISTENER_SLOTS) {
+		uc_value_t *this = ucv_array_get(listener_registry, i + LISTENER_SLOT_RES);
+		uc_value_t *func = ucv_array_get(listener_registry, i + LISTENER_SLOT_CB);
 		uc_nl_listener_t *l;
 		uc_value_t *o, *data;
 
@@ -2656,6 +2668,78 @@ uc_nl_fill_cmds(uint32_t *cmd_bits, uc_value_t *cmds)
 	return true;
 }
 
+static void
+uc_nl_listener_overrun_notify(struct uloop_timeout *t)
+{
+	uc_vm_t *vm = listener_vm;
+
+	for (size_t i = 0; i < ucv_array_length(listener_registry); i += LISTENER_SLOTS) {
+		uc_value_t *this = ucv_array_get(listener_registry, i + LISTENER_SLOT_RES);
+		uc_value_t *func = ucv_array_get(listener_registry, i + LISTENER_SLOT_OVERRUN_CB);
+
+		if (!ucv_resource_data(this, "nl80211.listener") || !ucv_is_callable(func))
+			continue;
+
+		uc_vm_stack_push(vm, ucv_get(this));
+		uc_vm_stack_push(vm, ucv_get(func));
+
+		if (uc_vm_call(vm, true, 0) != EXCEPTION_NONE) {
+			uloop_end();
+			return;
+		}
+
+		ucv_put(uc_vm_stack_pop(vm));
+	}
+}
+
+static void
+uc_nl_evsock_rcvbuf_set(int size)
+{
+	int fd = nl_socket_get_fd(nl80211_conn.evsock);
+
+	/* SO_RCVBUFFORCE exceeds net.core.rmem_max but needs CAP_NET_ADMIN */
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &size, sizeof(size)) < 0)
+		setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+
+	nl80211_conn.rcvbuf = size;
+}
+
+/*
+ * waitfor() and listener requests read the event socket as well, so an
+ * overrun can surface inside those calls. The handlers run from a timer
+ * to keep them out of the caller's own request.
+ */
+static void
+uc_nl_evsock_overrun(void)
+{
+	if (nl80211_conn.rcvbuf < NL80211_EVSOCK_RCVBUF_MAX)
+		uc_nl_evsock_rcvbuf_set(nl80211_conn.rcvbuf * 2);
+
+	if (!nl80211_conn.evsock_fd.registered || !listener_vm)
+		return;
+
+	nl80211_conn.overrun_timer.cb = uc_nl_listener_overrun_notify;
+	uloop_timeout_set(&nl80211_conn.overrun_timer, 0);
+}
+
+static bool
+uc_nl_evsock_error_take(struct uloop_fd *fd)
+{
+	socklen_t len = sizeof(int);
+	int err = 0;
+
+	if (!fd->error)
+		return false;
+
+	fd->error = false;
+
+	if (getsockopt(fd->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0)
+		return false;
+
+	/* any error the kernel sets on a multicast socket means a lost event */
+	return err != 0;
+}
+
 static bool
 uc_nl_evsock_init(void)
 {
@@ -2675,6 +2759,8 @@ uc_nl_evsock_init(void)
 		nl80211_conn.evsock = NULL;
 		return false;
 	}
+
+	uc_nl_evsock_rcvbuf_set(NL80211_EVSOCK_RCVBUF_INIT);
 
 	return true;
 }
@@ -2743,7 +2829,8 @@ uc_nl_waitfor(uc_vm_t *vm, size_t nargs)
 		if (poll(&pfd, 1, ms) != 1)
 			break;
 
-		nl_recvmsgs(nl80211_conn.evsock, cb);
+		if (nl_recvmsgs(nl80211_conn.evsock, cb) == -NLE_NOMEM)
+			uc_nl_evsock_overrun();
 
 		if (ms > 0) {
 			clock_gettime(CLOCK_MONOTONIC, &end);
@@ -2857,7 +2944,8 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 	nl_send_auto_complete(sock, msg);
 
 	while (ret > 0 && st.state < STATE_REPLIED)
-		nl_recvmsgs(sock, cb);
+		if (nl_recvmsgs(sock, cb) == -NLE_NOMEM && sock == nl80211_conn.evsock)
+			uc_nl_evsock_overrun();
 
 	nlmsg_free(msg);
 	nl_cb_put(cb);
@@ -2929,10 +3017,34 @@ uc_nl_request(uc_vm_t *vm, size_t nargs)
  * nlListener.close();
  */
 
+/*
+ * The kernel sets ENOBUFS only when the socket turns congested, and clears
+ * the congestion once the queue is empty, so drops before that point go
+ * unreported. Drain to empty before the handlers run so that none go
+ * unnoticed.
+ */
 static void
 uc_nl_listener_cb(struct uloop_fd *fd, unsigned int events)
 {
-	nl_recvmsgs(nl80211_conn.evsock, nl80211_conn.evsock_cb);
+	bool overrun = uc_nl_evsock_error_take(fd);
+	int err;
+
+	while (true) {
+		errno = 0;
+
+		err = nl_recvmsgs(nl80211_conn.evsock, nl80211_conn.evsock_cb);
+
+		if (err == -NLE_NOMEM && errno == ENOBUFS) {
+			overrun = true;
+			continue;
+		}
+
+		if (err < 0 || errno == EAGAIN || uloop_cancelled)
+			break;
+	}
+
+	if (overrun)
+		uc_nl_evsock_overrun();
 }
 
 /**
@@ -2977,7 +3089,7 @@ uc_nl_listener(uc_vm_t *vm, size_t nargs)
 	if (!fd->registered) {
 		fd->fd = nl_socket_get_fd(nl80211_conn.evsock);
 		fd->cb = uc_nl_listener_cb;
-		uloop_fd_add(fd, ULOOP_READ);
+		uloop_fd_add(fd, ULOOP_READ | ULOOP_ERROR_CB);
 	}
 
 	if (!nl80211_conn.evsock_cb) {
@@ -2991,12 +3103,13 @@ uc_nl_listener(uc_vm_t *vm, size_t nargs)
 		nl80211_conn.evsock_cb = cb;
 	}
 
-	for (i = 0; i < ucv_array_length(listener_registry); i += 2) {
-		if (!ucv_array_get(listener_registry, i))
+	for (i = 0; i < ucv_array_length(listener_registry); i += LISTENER_SLOTS) {
+		if (!ucv_array_get(listener_registry, i + LISTENER_SLOT_RES))
 			break;
 	}
 
-	ucv_array_set(listener_registry, i + 1, ucv_get(cb_func));
+	ucv_array_set(listener_registry, i + LISTENER_SLOT_CB, ucv_get(cb_func));
+	ucv_array_set(listener_registry, i + LISTENER_SLOT_OVERRUN_CB, NULL);
 	l = xalloc(sizeof(*l));
 	l->index = i;
 	if (!uc_nl_fill_cmds(l->cmds, cmds)) {
@@ -3006,7 +3119,7 @@ uc_nl_listener(uc_vm_t *vm, size_t nargs)
 	}
 
 	rv = uc_resource_new(listener_type, l);
-	ucv_array_set(listener_registry, i, ucv_get(rv));
+	ucv_array_set(listener_registry, i + LISTENER_SLOT_RES, ucv_get(rv));
 	listener_vm = vm;
 
 	return rv;
@@ -3020,8 +3133,9 @@ uc_nl_listener_free(void *arg)
 	if (!l)
 		return;
 
-	ucv_array_set(listener_registry, l->index, NULL);
-	ucv_array_set(listener_registry, l->index + 1, NULL);
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_RES, NULL);
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_CB, NULL);
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_OVERRUN_CB, NULL);
 	free(l);
 }
 
@@ -3054,6 +3168,43 @@ uc_nl_listener_set_commands(uc_vm_t *vm, size_t nargs)
 		uc_vm_raise_exception(vm, EXCEPTION_TYPE, "Invalid command ID");
 
 	return NULL;
+}
+
+/**
+ * Set the overrun handler of this listener
+ *
+ * The kernel drops event messages when the receive buffer of the event
+ * socket is full, and the lost events cannot be recovered. The module then
+ * enlarges the buffer and calls the overrun handler of each listener
+ * without arguments, from the event loop. The handler is the place to
+ * query the state that the lost events would have reported.
+ *
+ * @param {Function|null} handler - Function to call after an overrun, or
+ *                                  null to remove it
+ * @returns {boolean} true on success
+ * @example
+ * // Re-read the interfaces after lost events
+ * listener.set_overrun_handler(() => {
+ *     interfaces = request(const.NL80211_CMD_GET_INTERFACE, const.NLM_F_DUMP);
+ * });
+ */
+static uc_value_t *
+uc_nl_listener_set_overrun_handler(uc_vm_t *vm, size_t nargs)
+{
+	uc_nl_listener_t *l = uc_fn_thisval("nl80211.listener");
+	uc_value_t *handler = uc_fn_arg(0);
+
+	if (!l)
+		return NULL;
+
+	if (handler && !ucv_is_callable(handler)) {
+		uc_vm_raise_exception(vm, EXCEPTION_TYPE, "Invalid overrun handler");
+		return NULL;
+	}
+
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_OVERRUN_CB, ucv_get(handler));
+
+	return ucv_boolean_new(true);
 }
 
 /**
@@ -3558,6 +3709,7 @@ static const uc_function_list_t global_fns[] = {
 
 static const uc_function_list_t listener_fns[] = {
 	{ "set_commands",	uc_nl_listener_set_commands },
+	{ "set_overrun_handler",	uc_nl_listener_set_overrun_handler },
 	{ "request",		uc_nl_listener_request },
 	{ "close",			uc_nl_listener_close },
 };
