@@ -2664,7 +2664,9 @@ ucv_key_resolve_upval(uc_vm_t *vm, uc_value_t *v)
  * fresh property access bound by the VM's recursion limit.
  *
  * Arrays keep their dense storage: keys which are valid indices never dispatch
- * a metamethod at all. Passing vm == NULL performs the raw operation only.
+ * a metamethod at all, on the delete path such a key is refused outright since
+ * array elements are positional and not deletable. Passing vm == NULL performs
+ * the raw operation only.
  */
 
 /* Invoke `meta` as method on `scope`, passing `key` and optionally `val` and
@@ -2905,10 +2907,12 @@ bool
 ucv_key_delete(uc_vm_t *vm, uc_value_t *scope, uc_value_t *key)
 {
 	uc_value_t *meta, *rv;
-	bool deleted;
+	bool deleted, refused;
 
 	if (!scope || !key)
 		return false;
+
+	refused = false;
 
 	switch (ucv_type(scope)) {
 	case UC_OBJECT:
@@ -2917,28 +2921,60 @@ ucv_key_delete(uc_vm_t *vm, uc_value_t *scope, uc_value_t *key)
 
 		break;
 
+	case UC_ARRAY:
+		/* array elements are positional and not deletable - splice() removes
+		 * them - so a key which is an index, in range or not, is refused right
+		 * away without consulting a metamethod, just like on the read and write
+		 * paths; a key which is no index has no own-key storage to fall back to
+		 * either, only a __delete__ below can take care of it */
+		refused = (ucv_key_to_index(key) != INT64_MIN);
+
+		break;
+
+	/* resources have no own-key storage either, a __delete__ below is the only
+	 * way to handle their keys */
 	case UC_RESOURCE:
 		break;
 
-	/* arrays consist of positional elements, they are not deletable */
+	/* any other value kind can neither store keys nor carry a prototype, so no
+	 * __delete__ can be in effect for it */
 	default:
-		return false;
+		refused = true;
+
+		break;
 	}
 
 	if (vm != NULL) {
-		meta = ucv_metamethod_lookup(scope, "__delete__");
+		if (!refused) {
+			meta = ucv_metamethod_lookup(scope, "__delete__");
 
-		/* a __delete__ which is itself an object is a delegation target:
-		 * delete the key inside it, mirroring an object __get__ */
-		if (ucv_type(meta) == UC_OBJECT || ucv_type(meta) == UC_ARRAY)
-			return ucv_key_delete(vm, meta, key);
+			/* a __delete__ which is itself an object is a delegation target:
+			 * delete the key inside it, mirroring an object __get__ */
+			if (ucv_type(meta) == UC_OBJECT || ucv_type(meta) == UC_ARRAY)
+				return ucv_key_delete(vm, meta, key);
 
-		if (ucv_is_callable(meta)) {
-			/* by convention, a truthy return value means "deleted" */
-			deleted = ucv_meta_call(vm, scope, meta, key, NULL, &rv) && ucv_is_truish(rv);
-			ucv_put(rv);
+			if (ucv_is_callable(meta)) {
+				/* by convention, a truthy return value means "deleted" */
+				deleted = ucv_meta_call(vm, scope, meta, key, NULL, &rv) && ucv_is_truish(rv);
+				ucv_put(rv);
 
-			return deleted;
+				return deleted;
+			}
+
+			/* objects delete the key as own property below, arrays and resources
+			 * have no storage to remove it from */
+			refused = (ucv_type(scope) != UC_OBJECT);
+		}
+
+		/* a key which neither own storage nor a __delete__ metamethod can handle
+		 * makes this an unsupported operation, reported the way the VM reports
+		 * `delete 1` and friends: a plain false would merely read as "the key
+		 * wasn't there" */
+		if (refused) {
+			uc_vm_raise_exception(vm, EXCEPTION_REFERENCE,
+			                      "left-hand side expression is not an object");
+
+			return false;
 		}
 	}
 

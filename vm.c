@@ -2897,7 +2897,14 @@ uc_vm_insn_delete(uc_vm_t *vm, uc_vm_insn_t insn)
 
 	switch (ucv_type(v)) {
 	case UC_OBJECT:
+	case UC_ARRAY:
+	case UC_RESOURCE:
 		if (assert_mutable_value(vm, v)) {
+			/* ucv_key_delete() removes own object keys directly and consults the
+			 * __delete__ metamethod for keys the value has no own storage for.
+			 * Arrays and resources have no own-key storage at all, so there the
+			 * metamethod is the only way to handle a key; without one it raises
+			 * the same reference error the default case below reports */
 			rv = ucv_key_delete(vm, v, k);
 			uc_vm_stack_push(vm, ucv_boolean_new(rv));
 		}
