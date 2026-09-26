@@ -4454,16 +4454,33 @@ static uc_value_t *
 uc_socket_inst_bind(uc_vm_t *vm, size_t nargs)
 {
 	struct sockaddr_storage ss = { 0 };
-	uc_value_t *addr;
+	uc_value_t *addr, *port;
+	unsigned long n;
 	socklen_t slen;
 	int sockfd;
 
 	args_get(vm, nargs, &sockfd,
-		"address", UC_NULL, true, &addr);
+		"address", UC_NULL, true, &addr,
+		"port", UC_INTEGER, true, &port);
 
 	if (addr) {
 		if (!uv_to_sockaddr(addr, &ss, &slen))
 			return NULL;
+
+		if (port) {
+			if (ss.ss_family != AF_INET && ss.ss_family != AF_INET6)
+				err_return(EINVAL, "Port argument is only valid for IPv4 and IPv6 addresses");
+
+			n = ucv_to_unsigned(port);
+
+			if (n > 65535)
+				errno = ERANGE;
+
+			if (errno != 0)
+				err_return(errno, "Invalid port number");
+
+			((struct sockaddr_in6 *)&ss)->sin6_port = htons(n);
+		}
 
 		if (bind(sockfd, (struct sockaddr *)&ss, slen) == -1)
 			err_return(errno, "bind()");
