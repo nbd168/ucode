@@ -1,0 +1,41 @@
+A task output callback may run a nested event loop, during which the task
+finishes and is released. The outer callback invocation must still be able
+to complete.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+
+	uloop.init();
+
+	let seen = [];
+
+	uloop.task(
+		(pipe) => {
+			pipe.send('first');
+
+			return 'last';
+		},
+		(msg) => {
+			push(seen, msg);
+
+			if (msg != 'first')
+				return;
+
+			uloop.timer(300, () => uloop.end());
+			uloop.run();
+		}
+	);
+
+	uloop.timer(600, () => uloop.end());
+	uloop.run();
+
+	printf("%J\n", seen);
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+[ "first", "last" ]
+-- End --
