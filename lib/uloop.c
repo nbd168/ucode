@@ -862,7 +862,8 @@ get_fd(uc_vm_t *vm, uc_value_t *val)
  *
  * @param {number} events
  * Bitwise OR-ed flags of IO events (`ULOOP_READ`, `ULOOP_WRITE`) that the
- * callback should be invoked for.
+ * callback should be invoked for. At least one IO event is required; mode
+ * flags such as `ULOOP_ERROR_CB` alone are rejected.
  *
  * @returns {?module:uloop.handle}
  * Returns a handle instance for monitoring file descriptor events.
@@ -911,9 +912,11 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 	handle->fd.fd = fd;
 	handle->fd.cb = uc_uloop_handle_cb;
 
+	/* uloop_fd_add() succeeds without registering the descriptor when no
+	 * event to wait for is given, e.g. for ULOOP_ERROR_CB alone */
 	ret = uloop_fd_add(&handle->fd, (unsigned int)f);
-	if (ret != 0) {
-		ret = errno;
+	if (ret != 0 || !handle->fd.registered) {
+		ret = ret ? errno : EINVAL;
 		ucv_put(handle->cb.obj);
 		err_return(ret);
 	}
