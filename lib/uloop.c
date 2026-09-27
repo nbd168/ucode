@@ -1649,7 +1649,7 @@ static void
 uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 {
 	uc_uloop_task_t *task = container_of(fd, uc_uloop_task_t, output);
-	uc_value_t *obj = task->cb.obj;
+	uc_value_t *obj = ucv_get(task->cb.obj);
 	uc_vm_t *vm = task->cb.vm;
 	uc_value_t *msg = NULL;
 
@@ -1662,7 +1662,7 @@ uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 					uc_vm_stack_push(vm, ucv_get(task->input_cb));
 
 					if (!uc_uloop_vm_call(vm, true, 0))
-						return;
+						goto out;
 
 					msg = uc_vm_stack_pop(vm);
 					uc_uloop_pipe_send_common(vm, msg, task->input_fd);
@@ -1681,7 +1681,7 @@ uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 				uc_vm_stack_push(vm, msg);
 
 				if (!uc_uloop_vm_call(vm, true, 1))
-					return;
+					goto out;
 
 				ucv_put(uc_vm_stack_pop(vm));
 			}
@@ -1693,6 +1693,9 @@ uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 
 	if (!fd->registered && task->finished)
 		uc_uloop_task_clear(task);
+
+out:
+	ucv_put(obj);
 }
 
 static void
