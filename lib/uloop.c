@@ -79,10 +79,36 @@
 
 static int last_error = 0;
 
+/* A pinned instance is referenced by the event loop, so that it survives
+ * without a script reference while its event source is live. */
 typedef struct {
 	uc_vm_t *vm;
 	uc_value_t *obj;
+	bool pinned;
 } uc_uloop_cb_t;
+
+static void
+uc_uloop_cb_pin(uc_uloop_cb_t *cb)
+{
+	if (cb->pinned)
+		return;
+
+	cb->pinned = true;
+	ucv_get(cb->obj);
+	ucv_resource_persistent_set(cb->obj, true);
+}
+
+/* May free the instance. */
+static void
+uc_uloop_cb_unpin(uc_uloop_cb_t *cb)
+{
+	if (!cb->pinned)
+		return;
+
+	cb->pinned = false;
+	ucv_resource_persistent_set(cb->obj, false);
+	ucv_put(cb->obj);
+}
 
 static void *
 uc_uloop_alloc(uc_vm_t *vm, const char *type, size_t size, uc_value_t *func)
@@ -95,8 +121,7 @@ uc_uloop_alloc(uc_vm_t *vm, const char *type, size_t size, uc_value_t *func)
 		return NULL;
 
 	cb->vm = vm;
-	cb->obj = ucv_get(obj);
-	ucv_resource_persistent_set(obj, true);
+	cb->obj = obj;
 	ucv_resource_value_set(obj, 0, ucv_get(func));
 
 	return cb;
@@ -105,20 +130,12 @@ uc_uloop_alloc(uc_vm_t *vm, const char *type, size_t size, uc_value_t *func)
 static void
 uc_uloop_cb_free(uc_uloop_cb_t *cb)
 {
-	uc_value_t *obj = cb->obj;
-	uc_resource_ext_t *ext;
+	uc_resource_ext_t *ext = (uc_resource_ext_t *)cb->obj;
 
-	if (!obj)
-		return;
-
-	cb->obj = NULL;
-
-	ext = (uc_resource_ext_t *)obj;
 	for (size_t i = 0; i < ext->uvcount; i++)
-		ucv_resource_value_set(obj, i, NULL);
+		ucv_resource_value_set(cb->obj, i, NULL);
 
-	ucv_resource_persistent_set(obj, false);
-	ucv_put(obj);
+	uc_uloop_cb_unpin(cb);
 }
 
 static bool
@@ -425,6 +442,16 @@ uc_uloop_timeout_clear(uc_uloop_timer_t *timer)
 	return rv;
 }
 
+/* May free the instance. */
+static void
+uc_uloop_timer_pin_update(uc_uloop_timer_t *timer)
+{
+	if (timer->timeout.pending)
+		uc_uloop_cb_pin(&timer->cb);
+	else
+		uc_uloop_cb_unpin(&timer->cb);
+}
+
 /**
  * Rearms the uloop timer with the specified timeout.
  *
@@ -468,6 +495,7 @@ uc_uloop_timer_set(uc_vm_t *vm, size_t nargs)
 		err_return(errno);
 
 	rv = uloop_timeout_set(&timer->timeout, t);
+	uc_uloop_timer_pin_update(timer);
 
 	ok_return(ucv_boolean_new(rv == 0));
 }
@@ -513,6 +541,8 @@ uc_uloop_timer_remaining(uc_vm_t *vm, size_t nargs)
  * Cancels the uloop timer, disarming it and removing it from the event loop.
  *
  * This method destroys the uloop timer and releases its associated resources.
+ * Calling it on a timer that already fired is not required; the timer then
+ * only drops its callback and returns `false`.
  *
  * @function module:uloop.timer#cancel
  *
@@ -541,8 +571,11 @@ static void
 uc_uloop_timer_cb(struct uloop_timeout *timeout)
 {
 	uc_uloop_timer_t *timer = container_of(timeout, uc_uloop_timer_t, timeout);
+	uc_value_t *obj = ucv_get(timer->cb.obj);
 
 	uc_uloop_cb_invoke(&timer->cb, NULL, 0);
+	uc_uloop_timer_pin_update(timer);
+	ucv_put(obj);
 }
 
 /**
@@ -555,6 +588,11 @@ uc_uloop_timer_cb(struct uloop_timeout *timeout)
  * instance.
  *
  * A callback function must be provided to be executed when the timer expires.
+ *
+ * While the timer is armed, the event loop keeps it alive. Once it expired
+ * and the callback did not rearm it, the timer is freed as soon as the script
+ * no longer refers to it; a retained instance can be rearmed with
+ * `.set(timeout)`.
  *
  * @function module:uloop#timer
  *
@@ -600,6 +638,8 @@ uc_uloop_timer(uc_vm_t *vm, size_t nargs)
 
 	if (t >= 0)
 		uloop_timeout_set(&timer->timeout, t);
+
+	uc_uloop_timer_pin_update(timer);
 
 	ok_return(timer->cb.obj);
 }
@@ -730,6 +770,7 @@ static void
 uc_uloop_handle_cb(struct uloop_fd *fd, unsigned int flags)
 {
 	uc_uloop_handle_t *handle = container_of(fd, uc_uloop_handle_t, fd);
+	uc_value_t *obj = ucv_get(handle->cb.obj);
 	uc_value_t *args[3] = {
 		ucv_uint64_new(flags),
 		ucv_boolean_new(fd->eof),
@@ -740,6 +781,12 @@ uc_uloop_handle_cb(struct uloop_fd *fd, unsigned int flags)
 	ucv_put(args[0]);
 	ucv_put(args[1]);
 	ucv_put(args[2]);
+
+	/* a handle cannot be registered again */
+	if (!fd->registered)
+		uc_uloop_cb_unpin(&handle->cb);
+
+	ucv_put(obj);
 }
 
 static int
@@ -793,6 +840,10 @@ get_fd(uc_vm_t *vm, uc_value_t *val)
  * function to be invoked when the specified IO events occur, and bitwise OR-ed
  * flags of IO events (`ULOOP_READ`, `ULOOP_WRITE`) that the callback should be
  * invoked for.
+ *
+ * Unless `ULOOP_ERROR_CB` is given, the event loop removes the descriptor on
+ * an error or hangup and invokes the callback a last time. The handle is
+ * then freed as soon as the script no longer refers to it.
  *
  * @function module:uloop#handle
  *
@@ -855,14 +906,12 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 
 	ret = uloop_fd_add(&handle->fd, (unsigned int)f);
 	if (ret != 0) {
-		uc_value_t *obj = handle->cb.obj;
-
-		uc_uloop_cb_free(&handle->cb);
-		ucv_put(obj);
-
-		err_return(errno);
+		ret = errno;
+		ucv_put(handle->cb.obj);
+		err_return(ret);
 	}
 
+	uc_uloop_cb_pin(&handle->cb);
 	ucv_resource_value_set(handle->cb.obj, 1, ucv_get(fileno));
 	ok_return(handle->cb.obj);
 }
@@ -967,11 +1016,13 @@ uc_uloop_process_cb(struct uloop_process *proc, int exitcode)
 	uc_uloop_process_t *process = container_of(proc, uc_uloop_process_t, process);
 	int status = WIFEXITED(exitcode) ? WEXITSTATUS(exitcode) :
 		WIFSIGNALED(exitcode) ? -WTERMSIG(exitcode) : -1;
+	uc_value_t *obj = ucv_get(process->cb.obj);
 	uc_value_t *e = ucv_int64_new(status);
 
 	uc_uloop_cb_invoke(&process->cb, &e, 1);
 	uc_uloop_process_clear(process);
 	ucv_put(e);
+	ucv_put(obj);
 }
 
 /**
@@ -1071,6 +1122,7 @@ uc_uloop_process(uc_vm_t *vm, size_t nargs)
 	process->process.pid = pid;
 	process->process.cb = uc_uloop_process_cb;
 	uloop_process_add(&process->process);
+	uc_uloop_cb_pin(&process->cb);
 
 	ok_return(process->cb.obj);
 }
@@ -1462,7 +1514,7 @@ uloop_fd_close(struct uloop_fd *fd) {
 }
 
 static void
-uc_uloop_task_clear(uc_uloop_task_t *task)
+uc_uloop_task_detach(uc_uloop_task_t *task)
 {
 	if (task->input_fd >= 0) {
 		close(task->input_fd);
@@ -1471,6 +1523,12 @@ uc_uloop_task_clear(uc_uloop_task_t *task)
 
 	uloop_fd_close(&task->output);
 	uloop_process_delete(&task->process);
+}
+
+static void
+uc_uloop_task_clear(uc_uloop_task_t *task)
+{
+	uc_uloop_task_detach(task);
 	uc_uloop_cb_free(&task->cb);
 }
 
@@ -1775,6 +1833,7 @@ uc_uloop_task(uc_vm_t *vm, size_t nargs)
 	}
 
 	uloop_process_add(&task->process);
+	uc_uloop_cb_pin(&task->cb);
 
 	cbs = ucv_array_new(NULL);
 	ucv_array_set(cbs, 0, ucv_get(output_cb));
@@ -2025,6 +2084,8 @@ uc_uloop_interval(uc_vm_t *vm, size_t nargs)
 	if (t >= 0)
 		uloop_interval_set(&interval->interval, t);
 
+	uc_uloop_cb_pin(&interval->cb);
+
 	ok_return(interval->cb.obj);
 }
 #endif
@@ -2201,6 +2262,7 @@ uc_uloop_signal(uc_vm_t *vm, size_t nargs)
 	signal->signal.cb = uc_uloop_signal_cb;
 
 	uloop_signal_add(&signal->signal);
+	uc_uloop_cb_pin(&signal->cb);
 
 	ok_return(signal->cb.obj);
 }
@@ -2294,22 +2356,28 @@ static const uc_function_list_t global_fns[] = {
 
 static void close_timer(void *ud)
 {
-	uc_uloop_timeout_clear(ud);
+	uc_uloop_timer_t *timer = ud;
+
+	uloop_timeout_cancel(&timer->timeout);
 }
 
 static void close_handle(void *ud)
 {
-	uc_uloop_handle_clear(ud);
+	uc_uloop_handle_t *handle = ud;
+
+	uloop_fd_delete(&handle->fd);
 }
 
 static void close_process(void *ud)
 {
-	uc_uloop_process_clear(ud);
+	uc_uloop_process_t *process = ud;
+
+	uloop_process_delete(&process->process);
 }
 
 static void close_task(void *ud)
 {
-	uc_uloop_task_clear(ud);
+	uc_uloop_task_detach(ud);
 }
 
 static void close_pipe(void *ud)
@@ -2328,14 +2396,18 @@ static void close_pipe(void *ud)
 #ifdef HAVE_ULOOP_INTERVAL
 static void close_interval(void *ud)
 {
-	uc_uloop_interval_clear(ud);
+	uc_uloop_interval_t *interval = ud;
+
+	uloop_interval_cancel(&interval->interval);
 }
 #endif
 
 #ifdef HAVE_ULOOP_SIGNAL
 static void close_signal(void *ud)
 {
-	uc_uloop_signal_clear(ud);
+	uc_uloop_signal_t *signal = ud;
+
+	uloop_signal_delete(&signal->signal);
 }
 #endif
 
