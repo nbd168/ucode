@@ -1,0 +1,153 @@
+A timer that expired without being rearmed is released by the event loop,
+so that it is freed together with its callback as soon as the script drops
+its last reference, without an explicit cancel().
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+
+	uloop.init();
+
+	let fired = 0;
+
+	function on_fire() {
+		if (++fired == 20)
+			uloop.end();
+	}
+
+	let base = gc('count');
+
+	for (let i = 0; i < 20; i++)
+		uloop.timer(1, on_fire);
+
+	printf("armed: %d\n", gc('count') - base);
+	uloop.run();
+	printf("fired: %d, alive: %d\n", fired, gc('count') - base);
+
+	base = gc('count');
+
+	for (let i = 0; i < 10; i++)
+		uloop.timer(1, () => fired++);
+
+	uloop.timer(5, () => uloop.end());
+	uloop.run();
+	printf("fired: %d, alive with closures: %d\n", fired, gc('count') - base);
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+armed: 20
+fired: 20, alive: 0
+fired: 30, alive with closures: 0
+-- End --
+
+
+A retained timer stays usable after it expired: set() rearms it, and
+cancel() reports that nothing was pending.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+
+	uloop.init();
+
+	let count = 0;
+	let timer = uloop.timer(1, () => {
+		count++;
+		uloop.end();
+	});
+
+	uloop.run();
+	printf("count: %d, remaining: %d\n", count, timer.remaining());
+
+	printf("set: %s\n", timer.set(1));
+	uloop.run();
+	printf("count: %d, remaining: %d\n", count, timer.remaining());
+
+	printf("cancel: %s\n", timer.cancel());
+	printf("cancel again: %s\n", timer.cancel());
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+count: 1, remaining: -1
+set: true
+count: 2, remaining: -1
+cancel: false
+cancel again: false
+-- End --
+
+
+A timer rearmed from its own callback stays alive without a script
+reference, as does an unarmed timer that is armed later. The instance is
+freed once it expires without being rearmed.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+
+	uloop.init();
+
+	let rearmed = 0, deferred = 0;
+	let base = gc('count');
+
+	uloop.timer(1, function() {
+		if (++rearmed < 3)
+			this.set(1);
+	});
+
+	uloop.timer(null, function() {
+		deferred++;
+	}).set(2);
+
+	uloop.timer(20, () => uloop.end());
+	uloop.run();
+
+	printf("rearmed: %d, deferred: %d, alive: %d\n", rearmed, deferred,
+		gc('count') - base);
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+rearmed: 3, deferred: 1, alive: 0
+-- End --
+
+
+A timer cancelled from its own callback, or by a script that still calls
+cancel() after the timer fired, behaves as before.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+
+	uloop.init();
+
+	let results = [];
+	let base = gc('count');
+	let timer;
+
+	timer = uloop.timer(1, () => {
+		push(results, timer.cancel());
+	});
+
+	uloop.timer(5, () => uloop.end());
+	uloop.run();
+
+	push(results, timer.cancel());
+	timer = null;
+
+	printf("cancel: %J, alive: %d\n", results, gc('count') - base);
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+cancel: [ false, false ], alive: 0
+-- End --
