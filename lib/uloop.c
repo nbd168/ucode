@@ -129,13 +129,18 @@ uc_uloop_alloc(uc_vm_t *vm, const char *type, size_t size, uc_value_t *func)
 }
 
 static void
-uc_uloop_cb_free(uc_uloop_cb_t *cb)
+uc_uloop_cb_values_clear(uc_uloop_cb_t *cb)
 {
 	uc_resource_ext_t *ext = (uc_resource_ext_t *)cb->obj;
 
 	for (size_t i = 0; i < ext->uvcount; i++)
 		ucv_resource_value_set(cb->obj, i, NULL);
+}
 
+static void
+uc_uloop_cb_free(uc_uloop_cb_t *cb)
+{
+	uc_uloop_cb_values_clear(cb);
 	uc_uloop_cb_unpin(cb);
 }
 
@@ -676,7 +681,19 @@ typedef struct {
 	struct uloop_fd fd;
 	dev_t dev;
 	ino_t ino;
+	bool error_cb;
 } uc_uloop_handle_t;
+
+static void
+uc_uloop_handle_dead_cb(struct uloop_fd *fd, unsigned int flags)
+{
+}
+
+static bool
+uc_uloop_handle_is_dead(uc_uloop_handle_t *handle)
+{
+	return handle->fd.cb == uc_uloop_handle_dead_cb;
+}
 
 static int
 uc_uloop_handle_fd_delete(uc_uloop_handle_t *handle)
@@ -689,11 +706,13 @@ uc_uloop_handle_fd_delete(uc_uloop_handle_t *handle)
 	     st.st_dev == handle->dev && st.st_ino == handle->ino))
 		return uloop_fd_delete(&handle->fd);
 
-	/* The number may refer to another watched file now, so leave epoll
-	 * alone. */
+	/* The number may refer to another watched file now, and epoll may still
+	 * report the old file to this handle, so leave epoll alone and ignore
+	 * those reports. */
 	handle->fd.fd = -1;
 	uloop_fd_delete(&handle->fd);
 	handle->fd.fd = fd;
+	handle->fd.cb = uc_uloop_handle_dead_cb;
 
 	return 0;
 }
@@ -703,7 +722,11 @@ uc_uloop_handle_clear(uc_uloop_handle_t *handle)
 {
 	int rv = uc_uloop_handle_fd_delete(handle);
 
-	uc_uloop_cb_free(&handle->cb);
+	/* a dead handle stays pinned, epoll may still refer to it */
+	if (uc_uloop_handle_is_dead(handle))
+		uc_uloop_cb_values_clear(&handle->cb);
+	else
+		uc_uloop_cb_free(&handle->cb);
 
 	return rv;
 }
@@ -811,13 +834,20 @@ uc_uloop_handle_cb(struct uloop_fd *fd, unsigned int flags)
 		ucv_boolean_new(fd->error),
 	};
 
+	/* Registered with ULOOP_ERROR_CB, as uloop would remove the descriptor
+	 * by a number that the script may have closed. */
+	if (fd->error && !handle->error_cb)
+		uc_uloop_handle_fd_delete(handle);
+
 	uc_uloop_cb_invoke(&handle->cb, args, 3);
 	ucv_put(args[0]);
 	ucv_put(args[1]);
 	ucv_put(args[2]);
 
 	/* a handle cannot be registered again */
-	if (!fd->registered)
+	if (uc_uloop_handle_is_dead(handle))
+		uc_uloop_cb_values_clear(&handle->cb);
+	else if (!fd->registered)
 		uc_uloop_cb_unpin(&handle->cb);
 
 	ucv_put(obj);
@@ -944,10 +974,11 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 	handle->fd.cb = uc_uloop_handle_cb;
 	handle->dev = st.st_dev;
 	handle->ino = st.st_ino;
+	handle->error_cb = f & ULOOP_ERROR_CB;
 
 	/* uloop_fd_add() succeeds without registering the descriptor when no
 	 * event to wait for is given, e.g. for ULOOP_ERROR_CB alone */
-	ret = uloop_fd_add(&handle->fd, (unsigned int)f);
+	ret = uloop_fd_add(&handle->fd, (unsigned int)f | ULOOP_ERROR_CB);
 	if (ret != 0 || !handle->fd.registered) {
 		ret = ret ? errno : EINVAL;
 		ucv_put(handle->cb.obj);
