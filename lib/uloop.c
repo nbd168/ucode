@@ -1662,7 +1662,7 @@ uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 					uc_vm_stack_push(vm, ucv_get(task->input_cb));
 
 					if (!uc_uloop_vm_call(vm, true, 0))
-						goto out;
+						break;
 
 					msg = uc_vm_stack_pop(vm);
 					uc_uloop_pipe_send_common(vm, msg, task->input_fd);
@@ -1681,7 +1681,7 @@ uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 				uc_vm_stack_push(vm, msg);
 
 				if (!uc_uloop_vm_call(vm, true, 1))
-					goto out;
+					break;
 
 				ucv_put(uc_vm_stack_pop(vm));
 			}
@@ -1694,7 +1694,6 @@ uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 	if (!fd->registered && task->finished)
 		uc_uloop_task_clear(task);
 
-out:
 	ucv_put(obj);
 }
 
