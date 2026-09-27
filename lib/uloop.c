@@ -456,15 +456,16 @@ uc_uloop_timer_pin_update(uc_uloop_timer_t *timer)
  * Rearms the uloop timer with the specified timeout.
  *
  * This method rearms the uloop timer with the specified timeout value,
- * allowing it to trigger after the specified amount of time. If no timeout
- * value is provided or if the provided value is negative, the timer remains
- * disabled until rearmed with a positive timeout value.
+ * allowing it to trigger after the specified amount of time. A zero or
+ * negative timeout expires the timer on the next event loop iteration. If no
+ * timeout value or `null` is provided, the timer is disarmed and keeps its
+ * callback, so that a later call can rearm it.
  *
  * @function module:uloop.timer#set
  *
- * @param {number} [timeout=-1]
+ * @param {?number} [timeout]
  * Optional. The timeout value in milliseconds until the timer expires.
- * Defaults to -1, which disables the timer until rearmed with a positive timeout.
+ * Without a value, the timer is disarmed.
  *
  * @returns {?boolean}
  * Returns `true` on success, `null` on error, such as an invalid timeout argument.
@@ -483,18 +484,24 @@ uc_uloop_timer_set(uc_vm_t *vm, size_t nargs)
 {
 	uc_uloop_timer_t *timer = uc_fn_thisval("uloop.timer");
 	uc_value_t *timeout = uc_fn_arg(0);
-	int t, rv;
+	int t, rv = 0;
 
 	if (!timer)
 		err_return(EINVAL);
 
-	errno = 0;
-	t = timeout ? (int)ucv_int64_get(timeout) : -1;
+	if (timeout) {
+		errno = 0;
+		t = (int)ucv_int64_get(timeout);
 
-	if (errno)
-		err_return(errno);
+		if (errno)
+			err_return(errno);
 
-	rv = uloop_timeout_set(&timer->timeout, t);
+		rv = uloop_timeout_set(&timer->timeout, t);
+	}
+	else {
+		uloop_timeout_cancel(&timer->timeout);
+	}
+
 	uc_uloop_timer_pin_update(timer);
 
 	ok_return(ucv_boolean_new(rv == 0));
