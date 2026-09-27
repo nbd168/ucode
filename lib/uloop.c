@@ -682,6 +682,7 @@ typedef struct {
 	dev_t dev;
 	ino_t ino;
 	bool error_cb;
+	bool edge_trigger;
 } uc_uloop_handle_t;
 
 static void
@@ -695,15 +696,21 @@ uc_uloop_handle_is_dead(uc_uloop_handle_t *handle)
 	return handle->fd.cb == uc_uloop_handle_dead_cb;
 }
 
+static bool
+uc_uloop_handle_fd_valid(uc_uloop_handle_t *handle)
+{
+	struct stat st;
+
+	return fstat(handle->fd.fd, &st) == 0 &&
+	       st.st_dev == handle->dev && st.st_ino == handle->ino;
+}
+
 static int
 uc_uloop_handle_fd_delete(uc_uloop_handle_t *handle)
 {
 	int fd = handle->fd.fd;
-	struct stat st;
 
-	if (!handle->fd.registered ||
-	    (fstat(fd, &st) == 0 &&
-	     st.st_dev == handle->dev && st.st_ino == handle->ino))
+	if (!handle->fd.registered || uc_uloop_handle_fd_valid(handle))
 		return uloop_fd_delete(&handle->fd);
 
 	/* The number may refer to another watched file now, and epoll may still
@@ -715,6 +722,18 @@ uc_uloop_handle_fd_delete(uc_uloop_handle_t *handle)
 	handle->fd.cb = uc_uloop_handle_dead_cb;
 
 	return 0;
+}
+
+/* Handles are registered edge-triggered, and re-armed after each callback to
+ * deliver level-triggered events, so that a handle that can no longer be
+ * removed from epoll does not keep the event loop busy. Re-arming modifies
+ * the entry by number, so check the descriptor first. */
+static void
+uc_uloop_handle_rearm(uc_uloop_handle_t *handle)
+{
+	if (!uc_uloop_handle_fd_valid(handle) ||
+	    uloop_fd_add(&handle->fd, handle->fd.flags) != 0)
+		uc_uloop_handle_fd_delete(handle);
 }
 
 static int
@@ -843,6 +862,9 @@ uc_uloop_handle_cb(struct uloop_fd *fd, unsigned int flags)
 	ucv_put(args[0]);
 	ucv_put(args[1]);
 	ucv_put(args[2]);
+
+	if (fd->registered && !handle->edge_trigger)
+		uc_uloop_handle_rearm(handle);
 
 	/* a handle cannot be registered again */
 	if (uc_uloop_handle_is_dead(handle))
@@ -975,10 +997,12 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 	handle->dev = st.st_dev;
 	handle->ino = st.st_ino;
 	handle->error_cb = f & ULOOP_ERROR_CB;
+	handle->edge_trigger = f & ULOOP_EDGE_TRIGGER;
 
 	/* uloop_fd_add() succeeds without registering the descriptor when no
 	 * event to wait for is given, e.g. for ULOOP_ERROR_CB alone */
-	ret = uloop_fd_add(&handle->fd, (unsigned int)f | ULOOP_ERROR_CB);
+	ret = uloop_fd_add(&handle->fd,
+		(unsigned int)f | ULOOP_ERROR_CB | ULOOP_EDGE_TRIGGER);
 	if (ret != 0 || !handle->fd.registered) {
 		ret = ret ? errno : EINVAL;
 		ucv_put(handle->cb.obj);

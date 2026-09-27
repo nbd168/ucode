@@ -1,0 +1,101 @@
+A handle whose descriptor the script closed without delete() must not keep
+the event loop busy while a forked child keeps the file open and unread data
+is pending on it. The handle reports the pending data once and then goes
+quiet, also after delete().
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+	import * as fs from 'fs';
+
+	uloop.init();
+
+	function cpu_ticks() {
+		let stat = split(fs.readfile('/proc/self/stat'), ' ');
+
+		return +stat[13] + +stat[14];
+	}
+
+	function run(msecs) {
+		let ticks = cpu_ticks();
+
+		uloop.timer(msecs, () => uloop.end());
+		uloop.run();
+
+		return cpu_ticks() - ticks;
+	}
+
+	let fds = fs.pipe();
+	let events = 0;
+	let handle = uloop.handle(fds[0], () => events++, uloop.ULOOP_READ);
+	let holder = uloop.process('/bin/sleep', [ '5' ], null, () => uloop.end());
+
+	fds[1].write('x');
+	fds[1].flush();
+	fds[0].close();
+
+	printf("busy before delete: %s\n", run(500) > 10);
+	printf("delete: %s\n", handle.delete());
+	printf("busy after delete: %s\n", run(500) > 10);
+	printf("events: %d\n", events);
+
+	system('kill ' + holder.pid());
+	uloop.run();
+
+	fds[1].close();
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+busy before delete: false
+delete: true
+busy after delete: false
+events: 1
+-- End --
+
+-- Platform --
+Linux
+-- End --
+
+
+Without ULOOP_EDGE_TRIGGER, a handle is invoked again for as long as data
+is pending. With it, only new data invokes the handle again. The callbacks
+below never read the pending data.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+	import * as fs from 'fs';
+
+	uloop.init();
+
+	for (let flags in [ uloop.ULOOP_READ, uloop.ULOOP_READ | uloop.ULOOP_EDGE_TRIGGER ]) {
+		let fds = fs.pipe();
+		let events = 0;
+		let handle = uloop.handle(fds[0], () => {
+			if (++events == 3)
+				uloop.end();
+		}, flags);
+
+		fds[1].write('x');
+		fds[1].flush();
+
+		uloop.timer(50, () => uloop.end());
+		uloop.run();
+
+		printf("edge %s: %d\n", !!(flags & uloop.ULOOP_EDGE_TRIGGER), events);
+
+		handle.delete();
+		fds[0].close();
+		fds[1].close();
+	}
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+edge false: 3
+edge true: 1
+-- End --
