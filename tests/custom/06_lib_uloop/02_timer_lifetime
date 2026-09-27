@@ -151,3 +151,54 @@ cancel() after the timer fired, behaves as before.
 -- Expect stdout --
 cancel: [ false, false ], alive: 0
 -- End --
+
+
+Calling set() without a timeout or with null disarms the timer and keeps
+its callback, so that it can be rearmed. A disarmed timer is freed as soon
+as the script drops it. A negative timeout expires the timer on the next
+event loop iteration, as in libubox.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+
+	uloop.init();
+
+	let fired = 0;
+	let base = gc('count');
+	let timer = uloop.timer(1, () => fired++);
+
+	printf("set(null): %s, remaining: %d\n", timer.set(null), timer.remaining());
+	uloop.timer(10, () => uloop.end());
+	uloop.run();
+	printf("fired: %d\n", fired);
+
+	timer.set(1);
+	printf("set(): %s, remaining: %d\n", timer.set(), timer.remaining());
+	uloop.timer(10, () => uloop.end());
+	uloop.run();
+	printf("fired: %d\n", fired);
+
+	printf("set(-1): %s\n", timer.set(-1));
+	uloop.timer(10, () => uloop.end());
+	uloop.run();
+	printf("fired: %d\n", fired);
+
+	timer.set(1000);
+	timer.set();
+	timer = null;
+	printf("alive: %d\n", gc('count') - base);
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+set(null): true, remaining: -1
+fired: 0
+set(): true, remaining: -1
+fired: 0
+set(-1): true
+fired: 1
+alive: 0
+-- End --
