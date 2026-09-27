@@ -1,0 +1,46 @@
+Deleting a handle whose descriptor the script already closed must not
+unregister another handle that now uses the same descriptor number.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+	import * as fs from 'fs';
+
+	uloop.init();
+
+	let old_fds = fs.pipe();
+	let old_handle = uloop.handle(old_fds[0], () => null, uloop.ULOOP_READ);
+	let old_fileno = old_handle.fileno();
+
+	old_fds[0].close();
+	old_fds[1].close();
+
+	let fds = fs.pipe();
+	let events = 0;
+
+	uloop.handle(fds[0], function(flags) {
+		events++;
+		fds[0].read(1);
+		uloop.end();
+	}, uloop.ULOOP_READ);
+
+	printf("reused: %s\n", fds[0].fileno() == old_fileno);
+	printf("delete: %s\n", old_handle.delete());
+
+	fds[1].write('x');
+	fds[1].flush();
+
+	uloop.timer(200, () => uloop.end());
+	uloop.run();
+
+	printf("events: %d\n", events);
+
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+reused: true
+delete: true
+events: 1
+-- End --

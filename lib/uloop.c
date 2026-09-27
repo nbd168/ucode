@@ -68,6 +68,7 @@
 #include <limits.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/stat.h>
 
 #include <libubox/uloop.h>
 
@@ -673,12 +674,34 @@ uc_uloop_timer(uc_vm_t *vm, size_t nargs)
 typedef struct {
 	uc_uloop_cb_t cb;
 	struct uloop_fd fd;
+	dev_t dev;
+	ino_t ino;
 } uc_uloop_handle_t;
+
+static int
+uc_uloop_handle_fd_delete(uc_uloop_handle_t *handle)
+{
+	int fd = handle->fd.fd;
+	struct stat st;
+
+	if (!handle->fd.registered ||
+	    (fstat(fd, &st) == 0 &&
+	     st.st_dev == handle->dev && st.st_ino == handle->ino))
+		return uloop_fd_delete(&handle->fd);
+
+	/* The number may refer to another watched file now, so leave epoll
+	 * alone. */
+	handle->fd.fd = -1;
+	uloop_fd_delete(&handle->fd);
+	handle->fd.fd = fd;
+
+	return 0;
+}
 
 static int
 uc_uloop_handle_clear(uc_uloop_handle_t *handle)
 {
-	int rv = uloop_fd_delete(&handle->fd);
+	int rv = uc_uloop_handle_fd_delete(handle);
 
 	uc_uloop_cb_free(&handle->cb);
 
@@ -745,6 +768,10 @@ uc_uloop_handle_handle(uc_vm_t *vm, size_t nargs)
  * This method unregisters the uloop handle from the uloop event loop and frees
  * any associated resources. After calling this method, the handle instance
  * should no longer be used.
+ *
+ * Call this method before closing the underlying descriptor. The event loop
+ * does not notice a closed descriptor and keeps the handle alive until it
+ * is deleted.
  *
  * @function module:uloop.handle#delete
  *
@@ -889,12 +916,16 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 	uc_value_t *callback = uc_fn_arg(1);
 	uc_value_t *flags = uc_fn_arg(2);
 	uc_uloop_handle_t *handle;
+	struct stat st;
 	int fd, ret;
 	uint64_t f;
 
 	fd = get_fd(vm, fileno);
 
 	if (fd == -1)
+		err_return(errno);
+
+	if (fstat(fd, &st) == -1)
 		err_return(errno);
 
 	f = ucv_uint64_get(flags);
@@ -911,6 +942,8 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 	handle = uc_uloop_alloc(vm, "uloop.handle", sizeof(*handle), callback);
 	handle->fd.fd = fd;
 	handle->fd.cb = uc_uloop_handle_cb;
+	handle->dev = st.st_dev;
+	handle->ino = st.st_ino;
 
 	/* uloop_fd_add() succeeds without registering the descriptor when no
 	 * event to wait for is given, e.g. for ULOOP_ERROR_CB alone */
@@ -2385,9 +2418,7 @@ static void close_timer(void *ud)
 
 static void close_handle(void *ud)
 {
-	uc_uloop_handle_t *handle = ud;
-
-	uloop_fd_delete(&handle->fd);
+	uc_uloop_handle_fd_delete(ud);
 }
 
 static void close_process(void *ud)
