@@ -1,0 +1,125 @@
+A script may close the descriptor of a handle without delete() and open the
+same path again, which yields the same number, device and inode. If another
+descriptor keeps the old file open, epoll still reports it to the old
+handle. When the old handle is re-armed, it must not take over the epoll
+entry of a handle that watches the new file.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+	import * as fs from 'fs';
+
+	uloop.init();
+
+	let dir = fs.mkdtemp();
+	let path = dir + '/fifo';
+
+	system(['mkfifo', path]);
+
+	function run() {
+		uloop.timer(50, () => uloop.end());
+		uloop.run();
+	}
+
+	let old_file = fs.open(path, 'r+');
+	let old_fileno = old_file.fileno();
+	let old_events = 0;
+
+	uloop.handle(old_file, () => old_events++, uloop.ULOOP_READ);
+
+	fs.dup2(old_fileno, 100);
+	old_file.close();
+
+	let file = fs.open(path, 'r+');
+	let events = 0;
+
+	uloop.handle(file, () => events++,
+		uloop.ULOOP_READ | uloop.ULOOP_EDGE_TRIGGER);
+
+	printf("reused: %s\n", file.fileno() == old_fileno);
+
+	for (let i = 0; i < 2; i++) {
+		file.write('x');
+		file.flush();
+		run();
+	}
+
+	printf("old handle: %d, new handle: %d\n", old_events, events);
+
+	fs.fdopen(100).close();
+	fs.unlink(path);
+	fs.rmdir(dir);
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+reused: true
+old handle: 0, new handle: 2
+-- End --
+
+
+When nothing watches the reopened file, re-arming the old handle fails. The
+old handle must then stay allocated for epoll, which still reports the old
+file to it.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+	import * as fs from 'fs';
+
+	uloop.init();
+
+	let dir = fs.mkdtemp();
+	let path = dir + '/fifo';
+
+	system(['mkfifo', path]);
+
+	function run() {
+		uloop.timer(50, () => uloop.end());
+		uloop.run();
+	}
+
+	let old_file = fs.open(path, 'r+');
+	let old_fileno = old_file.fileno();
+	let old_events = 0;
+	let handle = uloop.handle(old_file, () => old_events++, uloop.ULOOP_READ);
+
+	fs.dup2(old_fileno, 100);
+	old_file.close();
+
+	let file = fs.open(path, 'r+');
+
+	printf("reused: %s\n", file.fileno() == old_fileno);
+
+	file.write('x');
+	file.flush();
+	run();
+
+	handle = null;
+	gc();
+
+	for (let i = 0; i < 2; i++) {
+		file.write('x');
+		file.flush();
+		run();
+	}
+
+	printf("old handle: %d\n", old_events);
+
+	fs.fdopen(100).close();
+	file.close();
+	fs.unlink(path);
+	fs.rmdir(dir);
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+reused: true
+old handle: 1
+-- End --
+
+-- Platform --
+Linux
+-- End --
