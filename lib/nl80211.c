@@ -3002,8 +3002,10 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 	nlmsg_free(msg);
 	nl_cb_put(cb);
 
-	if (ret < 0)
+	if (ret < 0) {
+		ucv_put(st.res);
 		err_return(ret, NULL);
+	}
 
 	switch (st.state) {
 	case STATE_REPLIED:
@@ -3013,6 +3015,7 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 		return ucv_boolean_new(true);
 
 	default:
+		ucv_put(st.res);
 		set_error(NLE_FAILURE, "Interrupted reply");
 
 		return ucv_boolean_new(false);
