@@ -2603,17 +2603,20 @@ cb_listener_event(struct nl_msg *msg, void *arg)
 	return NL_SKIP;
 }
 
+/* nl80211 sends every event with sequence 0 */
 static int
 cb_evsock_msg(struct nl_msg *msg, void *arg)
 {
 	struct nlmsghdr *hdr = nlmsg_hdr(msg);
+	uint32_t req_seq = arg ? *(uint32_t *)arg : 0;
 
-	if (hdr->nlmsg_seq == 0) {
+	if (hdr->nlmsg_seq == req_seq)
+		return NL_OK;
+
+	if (hdr->nlmsg_seq == 0)
 		cb_listener_event(msg, NULL);
-		return NL_SKIP;
-	}
 
-	return NL_OK;
+	return NL_SKIP;
 }
 
 static int
@@ -2832,6 +2835,7 @@ uc_nl_waitfor(uc_vm_t *vm, size_t nargs)
 	err = 0;
 
 	nl_cb_set(cb, NL_CB_SEQ_CHECK, NL_CB_CUSTOM, cb_seq, NULL);
+	nl_cb_set(cb, NL_CB_MSG_IN, NL_CB_CUSTOM, cb_evsock_msg, NULL);
 	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_event, &ctx);
 	nl_cb_err(cb, NL_CB_CUSTOM, cb_errno, &err);
 
@@ -2876,9 +2880,28 @@ uc_nl_waitfor(uc_vm_t *vm, size_t nargs)
 	}
 }
 
+static bool
+uc_nl_evsock_readable(void)
+{
+	struct pollfd pfd = {
+		.fd = nl_socket_get_fd(nl80211_conn.evsock),
+		.events = POLLIN,
+	};
+	int n;
+
+	do
+		n = poll(&pfd, 1, 0);
+	while (n < 0 && errno == EINTR);
+
+	return n > 0;
+}
+
 static uc_value_t *
 uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 {
+	bool evsock = (sock == nl80211_conn.evsock);
+	bool overrun = false;
+	uint32_t seq = 0;
 	request_state_t st = { .vm = vm };
 	uc_value_t *cmd = uc_fn_arg(0);
 	uc_value_t *flags = uc_fn_arg(1);
@@ -2953,16 +2976,33 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done_ack, &st);
 	nl_cb_err(cb, NL_CB_CUSTOM, cb_errno, &ret);
 
-	if (sock == nl80211_conn.evsock) {
+	if (evsock) {
 		nl_cb_set(cb, NL_CB_SEQ_CHECK, NL_CB_CUSTOM, cb_seq, NULL);
-		nl_cb_set(cb, NL_CB_MSG_IN, NL_CB_CUSTOM, cb_evsock_msg, NULL);
+		nl_cb_set(cb, NL_CB_MSG_IN, NL_CB_CUSTOM, cb_evsock_msg, &seq);
 	}
 
 	nl_send_auto_complete(sock, msg);
+	seq = nlmsg_hdr(msg)->nlmsg_seq;
 
-	while (ret > 0 && st.state < STATE_REPLIED)
-		if (uc_nl_recv_overrun(nl_recvmsgs(sock, cb)) && sock == nl80211_conn.evsock)
+	while (ret > 0 && st.state < STATE_REPLIED) {
+		/* the kernel queues a reply before send() returns, and the
+		 * next part of a dump while recvmsg() empties the queue */
+		if (evsock && !uc_nl_evsock_readable()) {
+			nlmsg_free(msg);
+			nl_cb_put(cb);
+			ucv_put(st.res);
+
+			if (overrun)
+				err_return(NLE_NOMEM, "Reply lost to an event socket overrun");
+
+			err_return(NLE_AGAIN, "Reply missing on the event socket");
+		}
+
+		if (uc_nl_recv_overrun(nl_recvmsgs(sock, cb)) && evsock) {
 			uc_nl_evsock_overrun();
+			overrun = true;
+		}
+	}
 
 	nlmsg_free(msg);
 	nl_cb_put(cb);
@@ -3119,6 +3159,7 @@ uc_nl_listener(uc_vm_t *vm, size_t nargs)
 			err_return(NLE_NOMEM, NULL);
 
 		nl_cb_set(cb, NL_CB_SEQ_CHECK, NL_CB_CUSTOM, cb_seq, NULL);
+		nl_cb_set(cb, NL_CB_MSG_IN, NL_CB_CUSTOM, cb_evsock_msg, NULL);
 		nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_listener_event, NULL);
 		nl80211_conn.evsock_cb = cb;
 	}
