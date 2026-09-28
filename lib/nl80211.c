@@ -95,6 +95,10 @@ limitations under the License.
 #define NL80211_EVSOCK_RCVBUF_INIT	(1024 * 1024)
 #define NL80211_EVSOCK_RCVBUF_MAX	(8 * 1024 * 1024)
 
+/* The longest wait for the next message of a reply on the non-blocking event
+ * socket. An overrun can drop the reply, and it then never comes. */
+#define NL80211_EVSOCK_REPLY_TIMEOUT_MS	5000
+
 enum {
 	LISTENER_SLOT_RES,
 	LISTENER_SLOT_CB,
@@ -2872,9 +2876,27 @@ uc_nl_waitfor(uc_vm_t *vm, size_t nargs)
 	}
 }
 
+static bool
+uc_nl_evsock_readable(void)
+{
+	struct pollfd pfd = {
+		.fd = nl_socket_get_fd(nl80211_conn.evsock),
+		.events = POLLIN,
+	};
+	int n;
+
+	do
+		n = poll(&pfd, 1, NL80211_EVSOCK_REPLY_TIMEOUT_MS);
+	while (n < 0 && errno == EINTR);
+
+	return n > 0;
+}
+
 static uc_value_t *
 uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 {
+	bool evsock = (sock == nl80211_conn.evsock);
+	bool overrun = false;
 	request_state_t st = { .vm = vm };
 	uc_value_t *cmd = uc_fn_arg(0);
 	uc_value_t *flags = uc_fn_arg(1);
@@ -2949,16 +2971,33 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done_ack, &st);
 	nl_cb_err(cb, NL_CB_CUSTOM, cb_errno, &ret);
 
-	if (sock == nl80211_conn.evsock) {
+	if (evsock) {
 		nl_cb_set(cb, NL_CB_SEQ_CHECK, NL_CB_CUSTOM, cb_seq, NULL);
 		nl_cb_set(cb, NL_CB_MSG_IN, NL_CB_CUSTOM, cb_evsock_msg, NULL);
 	}
 
 	nl_send_auto_complete(sock, msg);
 
-	while (ret > 0 && st.state < STATE_REPLIED)
-		if (nl_recvmsgs(sock, cb) == -NLE_NOMEM && sock == nl80211_conn.evsock)
+	while (ret > 0 && st.state < STATE_REPLIED) {
+		/* nl_recvmsgs() returns at once on the non-blocking event
+		 * socket, so without a wait this loop spins, and without end
+		 * where an overrun dropped the reply. */
+		if (evsock && !uc_nl_evsock_readable()) {
+			nlmsg_free(msg);
+			nl_cb_put(cb);
+			ucv_put(st.res);
+
+			if (overrun)
+				err_return(NLE_NOMEM, "Reply lost to an event socket overrun");
+
+			err_return(NLE_AGAIN, "No reply within %d ms", NL80211_EVSOCK_REPLY_TIMEOUT_MS);
+		}
+
+		if (nl_recvmsgs(sock, cb) == -NLE_NOMEM && evsock) {
 			uc_nl_evsock_overrun();
+			overrun = true;
+		}
+	}
 
 	nlmsg_free(msg);
 	nl_cb_put(cb);
