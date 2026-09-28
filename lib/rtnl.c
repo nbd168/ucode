@@ -3679,9 +3679,12 @@ uc_nl_request(uc_vm_t *vm, size_t nargs)
 		return ucv_boolean_new(true);
 
 	case STATE_ERROR:
+		ucv_put(st.res);
+
 		return ucv_boolean_new(false);
 
 	default:
+		ucv_put(st.res);
 		set_error(NLE_FAILURE, "Interrupted reply");
 
 		return ucv_boolean_new(false);
