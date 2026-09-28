@@ -2209,6 +2209,19 @@ cb_done(struct nl_msg *msg, void *arg)
 	return NL_STOP;
 }
 
+static int
+cb_done_ack(struct nl_msg *msg, void *arg)
+{
+	request_state_t *s = arg;
+
+	if (s->state == STATE_UNREPLIED)
+		s->res = ucv_boolean_new(true);
+
+	s->state = STATE_REPLIED;
+
+	return NL_STOP;
+}
+
 static void
 deep_merge_array(uc_value_t *dest, uc_value_t *src);
 
@@ -2937,7 +2950,7 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 
 	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_reply, &st);
 	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, cb_done, &st);
-	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done, &st);
+	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done_ack, &st);
 	nl_cb_err(cb, NL_CB_CUSTOM, cb_errno, &ret);
 
 	if (sock == nl80211_conn.evsock) {
@@ -2980,8 +2993,13 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
  * @param {number} cmd - The nl80211 command ID to execute
  * @param {number} flags - Netlink flags (optional, default: 0)
  * @param {Object} payload - Request payload object with attributes (optional)
- * @returns {Object|boolean} Response object from the kernel, or true for
- *                           successful acknowledgment without data
+ * @returns {?(Object|Object[]|boolean)} Response object from the kernel,
+ *                                       an array of objects for a dump
+ *                                       except of a single wiphy,
+ *                                       true for a successful
+ *                                       acknowledgement without data, or
+ *                                       null for a dump without entries
+ *                                       and on error
  * @example
  * // Get wireless device information
  * let response = request(const.NL80211_CMD_GET_WIPHY, 0, { wiphy: 0 });
@@ -3237,8 +3255,13 @@ uc_nl_listener_set_overrun_handler(uc_vm_t *vm, size_t nargs)
  * @param {number} cmd - The nl80211 command ID to execute
  * @param {number} flags - Netlink flags (optional, default: 0)
  * @param {Object} payload - Request payload object with attributes (optional)
- * @returns {Object|boolean} Response object from the kernel, or true for
- *                           successful acknowledgment without data
+ * @returns {?(Object|Object[]|boolean)} Response object from the kernel,
+ *                                       an array of objects for a dump
+ *                                       except of a single wiphy,
+ *                                       true for a successful
+ *                                       acknowledgement without data, or
+ *                                       null for a dump without entries
+ *                                       and on error
  * @example
  * // Listener sends its own request
  * let response = listener.request(const.NL80211_CMD_GET_STATION, 0, {
