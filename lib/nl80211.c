@@ -2209,6 +2209,19 @@ cb_done(struct nl_msg *msg, void *arg)
 	return NL_STOP;
 }
 
+static int
+cb_done_ack(struct nl_msg *msg, void *arg)
+{
+	request_state_t *s = arg;
+
+	if (s->state == STATE_UNREPLIED)
+		s->res = ucv_boolean_new(true);
+
+	s->state = STATE_REPLIED;
+
+	return NL_STOP;
+}
+
 static void
 deep_merge_array(uc_value_t *dest, uc_value_t *src);
 
@@ -2933,7 +2946,7 @@ uc_nl_request_common(struct nl_sock *sock, uc_vm_t *vm, size_t nargs)
 
 	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_reply, &st);
 	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, cb_done, &st);
-	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done, &st);
+	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done_ack, &st);
 	nl_cb_err(cb, NL_CB_CUSTOM, cb_errno, &ret);
 
 	if (sock == nl80211_conn.evsock) {
