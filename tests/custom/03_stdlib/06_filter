@@ -39,7 +39,7 @@ Supplying an invalid callback will trigger an exception.
 -- End --
 
 -- Expect stderr --
-Type error: left-hand side is not a function
+Type error: left-hand side is not a function, got "not_a_function" instead
 In line 2, byte 36:
 
  `    filter([1, 2, 3], "not_a_function")`

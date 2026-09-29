@@ -25,7 +25,11 @@
 #include "ucode/internal/program.h"
 #include "ucode/internal/chunk.h"
 #include "ucode/internal/lib.h" /* uc_error_context_format() */
+#include "ucode/internal/source.h" /* uc_source_callee_expr() */
 #include "ucode/internal/platform.h"
+
+/* maximum length of the value rendered into a "not a function" error message */
+#define UC_VALUE_HINT_MAXLEN 64
 
 #undef __insn
 #define __insn(_name) #_name,
@@ -722,6 +726,36 @@ uc_vm_frame_reinit(uc_vm_t *vm, uc_closure_t *closure, uc_value_t *ctx,
 	ucv_put(oldctx);
 }
 
+/* Returns the expression invoked by the call that the instruction the VM is
+ * about to execute belongs to, or NULL if it cannot be determined. The result
+ * is meant for error messages describing a failed call, and stays valid until
+ * the next call. */
+static const char *
+uc_vm_callee_expr(uc_vm_t *vm)
+{
+	uc_function_t *function;
+	uc_callframe_t *frame;
+	size_t insn;
+
+	/* the topmost frame is the one performing the failing call; if it belongs
+	 * to a native function, the call did not originate from source code */
+	if (vm->callframes.count == 0)
+		return NULL;
+
+	frame = &vm->callframes.entries[vm->callframes.count - 1];
+
+	if (!frame->closure)
+		return NULL;
+
+	function = frame->closure->function;
+	insn = (frame->ip - uc_vm_frame_chunk(frame)->entries) - 1;
+
+	/* a call instruction refers to the closing parenthesis of the arguments
+	 * passed to it */
+	return uc_source_callee_expr(uc_program_function_source(function),
+	                             uc_program_function_srcpos(function, insn));
+}
+
 static bool
 uc_vm_call_function(uc_vm_t *vm, uc_value_t *ctx, uc_value_t *fno, bool mcall,
                    size_t argspec, bool tail)
@@ -829,7 +863,24 @@ uc_vm_call_function(uc_vm_t *vm, uc_value_t *ctx, uc_value_t *fno, bool mcall,
 	}
 
 	if (ucv_type(fno) != UC_CLOSURE) {
-		uc_vm_raise_exception(vm, EXCEPTION_TYPE, "left-hand side is not a function");
+		/* name the invoked expression where it can be recovered from the source,
+		 * and render the value it held as JSON, so that the message identifies
+		 * both the offending expression and the value that was not a function;
+		 * a NULL vm skips __tostring__ dispatch, so describing the value has no
+		 * side effects */
+		const char *callee = uc_vm_callee_expr(vm);
+		char *hint = ucv_to_jsonstring(NULL, fno);
+		size_t hlen = strlen(hint);
+
+		if (hlen > UC_VALUE_HINT_MAXLEN)
+			memcpy(hint + UC_VALUE_HINT_MAXLEN - 3, "...", 4);
+
+		if (callee)
+			uc_vm_raise_exception(vm, EXCEPTION_TYPE, "`%s` is not a function, got %s instead", callee, hint);
+		else
+			uc_vm_raise_exception(vm, EXCEPTION_TYPE, "left-hand side is not a function, got %s instead", hint);
+
+		free(hint);
 		ucv_put(ctx);
 		ucv_put(fno);
 

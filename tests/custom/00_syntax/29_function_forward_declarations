@@ -186,7 +186,7 @@ In line 3, byte 11:
 9. Calling an unfilled forward declaration raises a runtime error.
 
 -- Expect stderr --
-Type error: left-hand side is not a function
+Type error: `foo` is not a function, got null instead
 In line 4, byte 6:
 
  `    foo();`
