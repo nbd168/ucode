@@ -190,7 +190,7 @@ Type error: left-hand side is not a function
 In line 4, byte 6:
 
  `    foo();`
-          ^-- Near here
+      ~~~~^~
 
 
 -- End --
