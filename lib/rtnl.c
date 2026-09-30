@@ -3470,6 +3470,19 @@ cb_done(struct nl_msg *msg, void *arg)
 }
 
 static int
+cb_done_ack(struct nl_msg *msg, void *arg)
+{
+	request_state_t *s = arg;
+
+	if (s->state == STATE_UNREPLIED)
+		s->res = ucv_boolean_new(true);
+
+	s->state = STATE_REPLIED;
+
+	return NL_STOP;
+}
+
+static int
 cb_error(struct sockaddr_nl *nla, struct nlmsgerr *err, void *arg)
 {
 	request_state_t *s = arg;
@@ -3553,7 +3566,13 @@ static const struct {
  * @param {number} flags - The netlink flags for the request
  * @param {*} payload - The payload data for the request
  *
- * @returns {?*} - The response data or null on error
+ * @returns {?(Object|Object[]|boolean)} - The response data, true for a
+ *                                         successful acknowledgement without
+ *                                         data, false when the kernel refuses
+ *                                         the request or the reply cannot be
+ *                                         received, or null for a dump
+ *                                         without entries and when the
+ *                                         request cannot be sent
  *
  * @example
  * // Send a route request
@@ -3652,7 +3671,7 @@ uc_nl_request(uc_vm_t *vm, size_t nargs)
 
 	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_reply, &st);
 	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, cb_done, &st);
-	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done, &st);
+	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done_ack, &st);
 	nl_cb_err(cb, NL_CB_CUSTOM, cb_error, &st);
 
 	nl_send_auto_complete(sock, msg);
