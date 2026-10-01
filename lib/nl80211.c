@@ -930,7 +930,7 @@ static const uc_nl_nested_spec_t nl80211_wiphy_radio_nla = {
 
 static const uc_nl_nested_spec_t nl80211_mlo_link_nla = {
 	.headsize = 0,
-	.nattrs = 12,
+	.nattrs = 13,
 	.attrs = {
 		{ NL80211_ATTR_MLO_LINK_ID, "link_id", DT_U8, 0, NULL },
 		{ NL80211_ATTR_MAC, "mac", DT_LLADDR, 0, NULL },
@@ -944,12 +944,13 @@ static const uc_nl_nested_spec_t nl80211_mlo_link_nla = {
 		{ NL80211_ATTR_MLO_TTLM_DLINK, "mlo_ttlm_dlink", DT_STRING, DF_BINARY, NULL },
 		{ NL80211_ATTR_MLO_TTLM_ULINK, "mlo_ttlm_ulink", DT_STRING, DF_BINARY, NULL },
 		{ NL80211_ATTR_PUNCT_BITMAP, "punct_bitmap", DT_U32, 0, NULL },
+		{ NL80211_ATTR_STA_INFO, "sta_info", DT_NESTED, 0, &nl80211_sta_info_nla },
 	}
 };
 
 static const uc_nl_nested_spec_t nl80211_msg = {
 	.headsize = 0,
-	.nattrs = 138,
+	.nattrs = 139,
 	.attrs = {
 		{ NL80211_ATTR_4ADDR, "4addr", DT_U8, 0, NULL },
 		{ NL80211_ATTR_AIRTIME_WEIGHT, "airtime_weight", DT_U16, 0, NULL },
@@ -1089,6 +1090,7 @@ static const uc_nl_nested_spec_t nl80211_msg = {
 		{ NL80211_ATTR_SURVEY_INFO, "survey_info", DT_NESTED, 0, &nl80211_survey_info_nla },
 		{ NL80211_ATTR_WIPHY_RADIOS, "radios", DT_NESTED, DF_MULTIPLE|DF_AUTOIDX, &nl80211_wiphy_radio_nla },
 		{ NL80211_ATTR_VIF_RADIO_MASK, "vif_radio_mask", DT_U32, 0, NULL },
+		{ NL80211_ATTR_STA_DUMP_LINK_STATS, "sta_dump_link_stats", DT_FLAG, 0, NULL },
 	}
 };
 
