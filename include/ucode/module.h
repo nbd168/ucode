@@ -23,7 +23,7 @@
 
 void uc_module_init(uc_vm_t *vm, uc_value_t *scope) __attribute__((weak));
 
-void uc_module_entry(uc_vm_t *vm, uc_value_t *scope);
+void uc_module_entry(uc_vm_t *vm, uc_value_t *scope) __attribute__((weak));
 void uc_module_entry(uc_vm_t *vm, uc_value_t *scope)
 {
 	if (uc_module_init)
