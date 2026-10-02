@@ -3486,6 +3486,8 @@ uc_vm_execute(uc_vm_t *vm, uc_program_t *program, uc_value_t **retval)
 	uc_stringbuf_t *buf;
 	uc_value_t *val;
 
+	uc_vm_clear_exception(vm);
+
 	frame = uc_vector_push(&vm->callframes, {
 		.closure = closure,
 		.stackframe = 0,
