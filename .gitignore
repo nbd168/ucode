@@ -3,6 +3,7 @@ Makefile
 CMakeCache.txt
 CMakeFiles
 *.cmake
+!cmake/*.cmake
 install_manifest.txt
 parser.[ch]
 parser.out
