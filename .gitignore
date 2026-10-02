@@ -33,3 +33,6 @@ examples/
 /debian/*.debhelper
 /debian/*.debhelper.log
 /debian/*.substvars
+/node_modules/
+/build/
+package-lock.json
