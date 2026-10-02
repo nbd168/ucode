@@ -26,7 +26,7 @@
 #include "ucode/platform.h"
 #include "ucode/internal/util.h"
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__EMSCRIPTEN__)
 # include <endian.h>
 # include <sys/sysmacros.h>
 #elif defined(__APPLE__)

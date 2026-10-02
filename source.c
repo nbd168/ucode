@@ -62,6 +62,7 @@ uc_source_new_buffer(const char *name, char *buf, size_t len)
 	src->fp = fp;
 	src->buffer = buf;
 	src->filename = strcpy((char *)src + ALIGN(sizeof(*src)), name);
+	src->runpath = src->filename;
 
 	src->lineinfo.count = 0;
 	src->lineinfo.entries = NULL;
