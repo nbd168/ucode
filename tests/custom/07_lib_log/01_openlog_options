@@ -1,0 +1,22 @@
+openlog() accepts an array of option names, matched case-insensitively. An
+unknown name or a non-string element makes it return false.
+
+-- Testcase --
+{%
+	import { openlog, closelog } from 'log';
+
+	printf("%J\n", [
+		openlog('test', [ 'pid', 'ndelay' ], 'user'),
+		openlog('test', [ 'PID' ], 'user'),
+		openlog('test', [ 'pid', 'nosuch' ], 'user'),
+		openlog('test', [ 1 ], 'user'),
+		openlog('test', 'pid', 'user')
+	]);
+
+	closelog();
+%}
+-- End --
+
+-- Expect stdout --
+[ true, true, false, false, true ]
+-- End --

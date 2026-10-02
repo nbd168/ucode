@@ -285,13 +285,16 @@ parse_options(uc_value_t *option)
 		for (size_t i = 0; i < ucv_array_length(option); i++) {
 			uc_value_t *opt = ucv_array_get(option, i);
 			char *s = ucv_string_get(opt);
+			size_t j;
 
-			for (size_t j = 0; j < ARRAY_SIZE(log_options); j++) {
+			for (j = 0; j < ARRAY_SIZE(log_options); j++)
 				if (s && !strcasecmp(log_options[j].name, s))
-					rv |= log_options[j].value;
-				else
-					return -1;
-			}
+					break;
+
+			if (j == ARRAY_SIZE(log_options))
+				return -1;
+
+			rv |= log_options[j].value;
 		}
 
 		return rv;
@@ -581,13 +584,16 @@ parse_channels(uc_value_t *channels)
 		for (size_t i = 0; i < ucv_array_length(channels); i++) {
 			uc_value_t *channel = ucv_array_get(channels, i);
 			char *s = ucv_string_get(channel);
+			size_t j;
 
-			for (size_t j = 0; j < ARRAY_SIZE(ulog_channels); j++) {
+			for (j = 0; j < ARRAY_SIZE(ulog_channels); j++)
 				if (s && !strcasecmp(s, ulog_channels[j].name))
-					rv |= ulog_channels[j].value;
-				else
-					return -1;
-			}
+					break;
+
+			if (j == ARRAY_SIZE(ulog_channels))
+				return -1;
+
+			rv |= ulog_channels[j].value;
 		}
 
 		return rv;

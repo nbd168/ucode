@@ -1,0 +1,29 @@
+ulog_open() accepts an array of channel names, matched case-insensitively. An
+unknown name or a non-string element makes it return false. This test needs the
+module built with libubox.
+
+-- Testcase --
+{%
+	import { ulog_open, ulog, ulog_close, LOG_INFO } from 'log';
+
+	printf("%J\n", [
+		ulog_open([ 'stdio' ], 'daemon', 'test'),
+		ulog_open([ 'syslog', 'stdio' ], 'daemon', 'test'),
+		ulog_open([ 'STDIO' ], 'daemon', 'test'),
+		ulog_open([ 'stdio', 'nosuch' ], 'daemon', 'test'),
+		ulog_open([ 1 ], 'daemon', 'test')
+	]);
+
+	ulog_open([ 'stdio' ], 'daemon', 'test');
+	ulog(LOG_INFO, "to stderr\n");
+	ulog_close();
+%}
+-- End --
+
+-- Expect stdout --
+[ true, true, true, false, false ]
+-- End --
+
+-- Expect stderr --
+test: to stderr
+-- End --
