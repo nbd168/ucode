@@ -427,7 +427,7 @@ uc_openlog(uc_vm_t *vm, size_t nargs)
 	if (options == -1 || facility == -1)
 		return ucv_boolean_new(false);
 
-	openlog(ident, options, facility);
+	openlog(ident, options, uc_fn_arg(2) ? facility : LOG_USER);
 
 	return ucv_boolean_new(true);
 }
@@ -691,6 +691,13 @@ uc_ulog_open(uc_vm_t *vm, size_t nargs)
 
 	if (channels == -1 || facility == -1)
 		return ucv_boolean_new(false);
+
+	/* -1 lets libubox pick its context dependent defaults */
+	if (!uc_fn_arg(0))
+		channels = -1;
+
+	if (!uc_fn_arg(1))
+		facility = -1;
 
 	ulog_open(channels, facility, ident);
 
