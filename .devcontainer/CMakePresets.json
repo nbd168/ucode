@@ -1,0 +1,29 @@
+{
+	"version": 4,
+	"configurePresets": [
+		{
+			"name": "dev",
+			"displayName": "Development (clang, unit tests)",
+			"binaryDir": "${sourceDir}/build",
+			"cacheVariables": {
+				"CMAKE_C_COMPILER": "clang",
+				"UNIT_TESTING": "ON"
+			}
+		}
+	],
+	"buildPresets": [
+		{
+			"name": "dev",
+			"configurePreset": "dev"
+		}
+	],
+	"testPresets": [
+		{
+			"name": "dev",
+			"configurePreset": "dev",
+			"output": {
+				"outputOnFailure": true
+			}
+		}
+	]
+}
