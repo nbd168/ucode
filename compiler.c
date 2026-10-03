@@ -429,6 +429,9 @@ uc_compiler_parse_precedence_for_token(uc_compiler_t *compiler, uc_precedence_t 
 			uc_compiler_syntax_error(compiler, compiler->parser->curr.pos, "Expecting ';' or binary operator");
 			uc_compiler_parse_advance(compiler);
 
+			uc_compiler_backpatch(compiler, compiler->patchlist->depth, 0);
+			uc_compiler_exprstack_pop(compiler);
+
 			return;
 		}
 
@@ -938,7 +941,7 @@ uc_compiler_declare_local(uc_compiler_t *compiler, uc_value_t *name, bool consta
 		str2 = ucv_string_get(locals->entries[i - 1].name);
 		len2 = ucv_string_length(locals->entries[i - 1].name);
 
-		if (len1 == len2 && !strcmp(str1, str2)) {
+		if (str1 && str2 && len1 == len2 && !memcmp(str1, str2, len1)) {
 			if (locals->entries[i - 1].funcstub) {
 				uc_compiler_syntax_error(compiler, compiler->parser->prev.pos,
 					"Variable '%s' redeclared", str2);
@@ -991,7 +994,7 @@ uc_compiler_resolve_local(uc_compiler_t *compiler, uc_value_t *name, bool *const
 		str2 = ucv_string_get(locals->entries[i - 1].name);
 		len2 = ucv_string_length(locals->entries[i - 1].name);
 
-		if (len1 != len2 || strcmp(str1, str2))
+		if (!str1 || !str2 || len1 != len2 || memcmp(str1, str2, len1))
 			continue;
 
 		if (locals->entries[i - 1].depth == -1) {
@@ -1027,7 +1030,7 @@ uc_compiler_resolve_funcstub(uc_compiler_t *compiler, uc_value_t *name)
 		str2 = ucv_string_get(locals->entries[i - 1].name);
 		len2 = ucv_string_length(locals->entries[i - 1].name);
 
-		if (len1 == len2 && !strcmp(str1, str2))
+		if (str1 && str2 && len1 == len2 && !memcmp(str1, str2, len1))
 			return locals->entries[i - 1].funcstub ? (ssize_t)(i - 1) : -1;
 	}
 
@@ -1293,11 +1296,15 @@ uc_compiler_compile_delete(uc_compiler_t *compiler)
 
 	uc_compiler_parse_precedence(compiler, P_UNARY);
 
-	type = chunk->entries[compiler->last_insn];
+	type = (compiler->last_insn < chunk->count)
+		? chunk->entries[compiler->last_insn] : 0;
 
-	if (type != I_LVAL)
+	if (type != I_LVAL) {
 		uc_compiler_syntax_error(compiler, 0,
 			"expecting a property access expression");
+
+		return;
+	}
 
 	chunk->entries[compiler->last_insn] = I_DELETE;
 }
@@ -1753,8 +1760,14 @@ uc_compiler_compile_paren(uc_compiler_t *compiler)
 			if (uc_compiler_compile_var_or_arrowfn(compiler, varname) == TK_LABEL) {
 				/* parse operand and rhs */
 				while (P_TERNARY <= uc_compiler_parse_rule(compiler->parser->curr.type)->precedence) {
+					uc_parse_rule_t *rule =
+						uc_compiler_parse_rule(compiler->parser->curr.type);
+
+					if (!rule->infix)
+						break;
+
 					uc_compiler_parse_advance(compiler);
-					uc_compiler_parse_rule(compiler->parser->prev.type)->infix(compiler);
+					rule->infix(compiler);
 				}
 			}
 
@@ -1798,7 +1811,8 @@ uc_compiler_compile_call(uc_compiler_t *compiler)
 	bool mcall;
 
 	/* determine the kind of the lhs */
-	type = chunk->entries[compiler->last_insn];
+	type = (compiler->last_insn < chunk->count)
+		? chunk->entries[compiler->last_insn] : 0;
 	mcall = (type == I_LVAL);
 
 	if (mcall) {
@@ -4271,6 +4285,7 @@ uc_compile_from_bytecode(uc_parse_config_t *config, uc_source_t *source, char **
 			xasprintf(errp, "Program file contains no entry function\n");
 
 		ucv_put(&prog->header);
+		prog = NULL;
 	}
 
 	return prog;

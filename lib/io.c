@@ -104,6 +104,10 @@ mac_ioctl_cmd(unsigned int dir, unsigned int type, unsigned int num, size_t size
 #define IOCTL_CMD(dir, type, num, size) mac_ioctl_cmd((dir), (type), (num), (size))
 #endif
 
+#if defined(HAS_IOCTL) || defined(HAS_MAC_IOCTL)
+#define IOCTL_REPLY_MIN 4096
+#endif
+
 #include "ucode/module.h"
 
 #define err_return(err) do { \
@@ -559,7 +563,10 @@ uc_io_read(uc_vm_t *vm, size_t nargs)
 	if (len > SSIZE_MAX)
 		len = SSIZE_MAX;
 
-	buf = xalloc(len);
+	buf = calloc(1, len);
+
+	if (!buf)
+		err_return(ENOMEM);
 
 	rlen = read(fd, buf, len);
 
@@ -989,7 +996,7 @@ uc_io_ioctl(uc_vm_t *vm, size_t nargs)
 	uc_value_t *num = uc_fn_arg(2);
 	uc_value_t *value = uc_fn_arg(3);
 	uc_value_t *mem = NULL;
-	char *buf = NULL;
+	char *buf = NULL, *heap = NULL;
 	unsigned long req = 0;
 	unsigned int dir, ty, nr;
 	size_t sz = 0;
@@ -1023,16 +1030,16 @@ uc_io_ioctl(uc_vm_t *vm, size_t nargs)
 		if (ucv_type(value) != UC_INTEGER)
 			err_return(EINVAL);
 
+		errno = 0;
 		sz = ucv_to_unsigned(value);
 
 		if (errno != 0)
 			err_return(errno);
 
-		mem = xalloc(sizeof(uc_string_t) + sz + 1);
-		mem->type = UC_STRING;
-		mem->refcount = 1;
-		buf = ucv_string_get(mem);
-		((uc_string_t *)mem)->length = sz;
+		if (sz > INT_MAX)
+			err_return(EOVERFLOW);
+
+		heap = buf = xalloc(sz + 1);
 		break;
 
 	case IOC_DIR_RW:
@@ -1040,8 +1047,8 @@ uc_io_ioctl(uc_vm_t *vm, size_t nargs)
 			err_return(EINVAL);
 
 		sz = ucv_string_length(value);
-		mem = ucv_string_new_length(ucv_string_get(value), sz);
-		buf = ucv_string_get(mem);
+		heap = buf = xalloc(sz < IOCTL_REPLY_MIN ? IOCTL_REPLY_MIN : sz + 1);
+		memcpy(buf, ucv_string_get(value), sz);
 		break;
 
 	default:
@@ -1059,11 +1066,18 @@ uc_io_ioctl(uc_vm_t *vm, size_t nargs)
 	ret = ioctl(fd, req, buf);
 
 	if (ret < 0) {
-		ucv_put(mem);
+		free(heap);
 		err_return(errno);
 	}
 
-	return mem ? mem : ucv_uint64_new(ret);
+	if (heap) {
+		mem = ucv_string_new_length(heap, sz);
+		free(heap);
+
+		return mem;
+	}
+
+	return ucv_uint64_new(ret);
 }
 
 #endif

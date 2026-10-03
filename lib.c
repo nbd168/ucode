@@ -3370,7 +3370,7 @@ uc_match(uc_vm_t *vm, size_t nargs)
 	int eflags = 0, res;
 	uc_regexp_t *re;
 	bool freeable;
-	char *p;
+	char *str, *p;
 	size_t i;
 
 	if (ucv_type(pattern) != UC_REGEXP || !subject)
@@ -3383,7 +3383,7 @@ uc_match(uc_vm_t *vm, size_t nargs)
 	if (!pmatch)
 		return NULL;
 
-	p = uc_cast_string(vm, &subject, &freeable);
+	str = p = uc_cast_string(vm, &subject, &freeable);
 
 	while (true) {
 		res = regexec(&re->regexp, p, 1 + re->regexp.re_nsub, pmatch, eflags);
@@ -3426,7 +3426,7 @@ uc_match(uc_vm_t *vm, size_t nargs)
 	free(pmatch);
 
 	if (freeable)
-		free(p);
+		free(str);
 
 	return rv;
 }
@@ -4924,7 +4924,11 @@ uc_b64dec(uc_vm_t *vm, size_t nargs)
 	state = BYTE1;
 
 	/* memset the last expected output char to pre-grow the output buffer */
-	printbuf_memset(buf, off + (ucv_string_length(str) / 4) * 3, 0, 1);
+	if (printbuf_memset(buf, off + ((ucv_string_length(str) + 3) / 4) * 3, 0, 1)) {
+		printbuf_free(buf);
+
+		return NULL;
+	}
 
 	while ((ch = (unsigned char)*src++) != '\0') {
 		if (isspace(ch))	/* Skip whitespace anywhere. */

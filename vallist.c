@@ -603,6 +603,9 @@ uc_vallist_get(uc_value_list_t *list, size_t idx)
 	case TAG_STR:
 		len = TAG_GET_STR_L(list->index[idx]);
 
+		if (len >= sizeof(str))
+			return NULL;
+
 		for (n = 0; n < len; n++)
 			str[n] = (list->index[idx] >> ((n + 1) << 3));
 

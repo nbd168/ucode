@@ -69,6 +69,11 @@
 
 #include "ucode/module.h"
 
+#ifndef CMSG_ALIGN
+/* glibc exposes CMSG_ALIGN() via <asm/sockios.h>; BSD and macOS do not. */
+# define CMSG_ALIGN(len) (((len) + sizeof(int) - 1) & ~(sizeof(int) - 1))
+#endif
+
 #if defined(__linux__)
 # include <linux/in6.h>
 # include <linux/if_packet.h>
@@ -238,6 +243,9 @@ static bool
 strbuf_grow(uc_stringbuf_t *sb, size_t size)
 {
 	if (size > 0) {
+		if (size > (size_t)INT_MAX - sizeof(uc_string_t))
+			err_return(EOVERFLOW, "Requested size too large");
+
 		if (printbuf_memset(sb, sizeof(uc_string_t) + size - 1, '\0', 1))
 			err_return(ENOMEM, "Out of memory");
 	}
@@ -4048,6 +4056,7 @@ uc_socket_inst_sendmsg(uc_vm_t *vm, size_t nargs)
 	strbuf_array_t sbarr = { 0 };
 	struct msghdr msg = { 0 };
 	struct iovec vec = { 0 };
+	bool ctl_allocated = false;
 	int flagval, sockfd;
 	socklen_t slen;
 	ssize_t ret;
@@ -4078,6 +4087,7 @@ uc_socket_inst_sendmsg(uc_vm_t *vm, size_t nargs)
 
 		if (msg.msg_controllen > 0) {
 			msg.msg_control = xalloc(msg.msg_controllen);
+			ctl_allocated = true;
 
 			struct cmsghdr *cmsg = NULL;
 
@@ -4103,7 +4113,7 @@ uc_socket_inst_sendmsg(uc_vm_t *vm, size_t nargs)
 			}
 
 			msg.msg_controllen = (cmsg != NULL)
-				? (char *)cmsg - (char *)msg.msg_control + CMSG_SPACE(cmsg->cmsg_len)
+				? (char *)cmsg - (char *)msg.msg_control + CMSG_ALIGN(cmsg->cmsg_len)
 				: 0;
 		}
 	}
@@ -4168,7 +4178,8 @@ uc_socket_inst_sendmsg(uc_vm_t *vm, size_t nargs)
 	if (msg.msg_iov != &vec)
 		free(msg.msg_iov);
 
-	free(msg.msg_control);
+	if (ctl_allocated)
+		free(msg.msg_control);
 
 	if (ret == -1)
 		err_return(errno, "sendmsg()");

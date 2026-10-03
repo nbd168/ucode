@@ -738,11 +738,15 @@ uc_ubus_put_res(uc_value_t **rp)
 	ucv_put(res);
 }
 
-static uc_value_t *
-blob_to_ucv(uc_vm_t *vm, struct blob_attr *attr, bool table, const char **name);
+#define UBUS_MAX_BLOB_DEPTH 256
 
 static uc_value_t *
-blob_array_to_ucv(uc_vm_t *vm, struct blob_attr *attr, size_t len, bool table)
+blob_to_ucv(uc_vm_t *vm, struct blob_attr *attr, bool table, const char **name,
+            size_t depth);
+
+static uc_value_t *
+blob_array_to_ucv_depth(uc_vm_t *vm, struct blob_attr *attr, size_t len,
+                        bool table, size_t depth)
 {
 	uc_value_t *o = table ? ucv_object_new(vm) : ucv_array_new(vm);
 	uc_value_t *v;
@@ -755,7 +759,7 @@ blob_array_to_ucv(uc_vm_t *vm, struct blob_attr *attr, size_t len, bool table)
 
 	__blob_for_each_attr(pos, attr, rem) {
 		name = NULL;
-		v = blob_to_ucv(vm, pos, table, &name);
+		v = blob_to_ucv(vm, pos, table, &name, depth);
 
 		if (table && name)
 			ucv_object_add(o, name, v);
@@ -769,7 +773,14 @@ blob_array_to_ucv(uc_vm_t *vm, struct blob_attr *attr, size_t len, bool table)
 }
 
 static uc_value_t *
-blob_to_ucv(uc_vm_t *vm, struct blob_attr *attr, bool table, const char **name)
+blob_array_to_ucv(uc_vm_t *vm, struct blob_attr *attr, size_t len, bool table)
+{
+	return blob_array_to_ucv_depth(vm, attr, len, table, 0);
+}
+
+static uc_value_t *
+blob_to_ucv(uc_vm_t *vm, struct blob_attr *attr, bool table, const char **name,
+            size_t depth)
 {
 	void *data;
 	int len;
@@ -811,10 +822,16 @@ blob_to_ucv(uc_vm_t *vm, struct blob_attr *attr, bool table, const char **name)
 		return ucv_string_new_length(data, len - 1);
 
 	case BLOBMSG_TYPE_ARRAY:
-		return blob_array_to_ucv(vm, data, len, false);
+		if (depth >= UBUS_MAX_BLOB_DEPTH)
+			return NULL;
+
+		return blob_array_to_ucv_depth(vm, data, len, false, depth + 1);
 
 	case BLOBMSG_TYPE_TABLE:
-		return blob_array_to_ucv(vm, data, len, true);
+		if (depth >= UBUS_MAX_BLOB_DEPTH)
+			return NULL;
+
+		return blob_array_to_ucv_depth(vm, data, len, true, depth + 1);
 
 	default:
 		return NULL;
@@ -864,15 +881,29 @@ ucv_to_blob(const char *name, uc_value_t *val, struct blob_buf *blob)
 		break;
 
 	case UC_ARRAY:
+		if (ucv_is_marked(val)) {
+			blobmsg_add_field(blob, BLOBMSG_TYPE_UNSPEC, name, NULL, 0);
+			break;
+		}
+
+		ucv_set_mark(val);
 		c = blobmsg_open_array(blob, name);
 		ucv_array_to_blob(val, blob);
 		blobmsg_close_array(blob, c);
+		ucv_clear_mark(val);
 		break;
 
 	case UC_OBJECT:
+		if (ucv_is_marked(val)) {
+			blobmsg_add_field(blob, BLOBMSG_TYPE_UNSPEC, name, NULL, 0);
+			break;
+		}
+
+		ucv_set_mark(val);
 		c = blobmsg_open_table(blob, name);
 		ucv_object_to_blob(val, blob);
 		blobmsg_close_table(blob, c);
+		ucv_clear_mark(val);
 		break;
 
 	default:
@@ -1318,11 +1349,21 @@ uc_ubus_call_common(uc_vm_t *vm, uc_ubus_connection_t *c, uc_ubus_call_res_t *re
 		ucv_object_to_blob(funargs, &c->buf);
 
 	if (fd) {
-		fd_val = get_fd(vm, fd, NULL);
+		bool fd_handle = false;
+
+		fd_val = get_fd(vm, fd, &fd_handle);
 
 		if (fd_val < 0)
 			errval_return(UBUS_STATUS_INVALID_ARGUMENT,
 			              "Invalid file descriptor argument");
+
+		if (fd_handle) {
+			fd_val = dup(fd_val);
+
+			if (fd_val < 0)
+				errval_return(UBUS_STATUS_UNKNOWN_ERROR,
+				              "Unable to duplicate file descriptor");
+		}
 	}
 
 	res->mret = (ret_mode == RET_MODE_MULTIPLE);
@@ -1506,11 +1547,21 @@ uc_ubus_defer_common(uc_vm_t *vm, uc_ubus_connection_t *c, uc_ubus_call_res_t *r
 		ucv_object_to_blob(funargs, &c->buf);
 
 	if (fd) {
-		fd_val = get_fd(vm, fd, NULL);
+		bool fd_handle = false;
+
+		fd_val = get_fd(vm, fd, &fd_handle);
 
 		if (fd_val < 0)
 			errval_return(UBUS_STATUS_INVALID_ARGUMENT,
 			              "Invalid file descriptor argument");
+
+		if (fd_handle) {
+			fd_val = dup(fd_val);
+
+			if (fd_val < 0)
+				errval_return(UBUS_STATUS_UNKNOWN_ERROR,
+				              "Unable to duplicate file descriptor");
+		}
 	}
 
 	res->res = ucv_resource_create_ex(vm, "ubus.deferred", (void **)&defer, __DEFER_RES_MAX, sizeof(*defer));
@@ -1924,15 +1975,24 @@ static uc_value_t *
 uc_ubus_request_set_fd(uc_vm_t *vm, size_t nargs)
 {
 	uc_ubus_request_t *callctx = uc_fn_thisval("ubus.request");
+	bool handle = false;
 	int fd;
 
 	if (!callctx)
 		err_return(UBUS_STATUS_INVALID_ARGUMENT, "Invalid call context");
 
-	fd = get_fd(vm, uc_fn_arg(0), NULL);
+	fd = get_fd(vm, uc_fn_arg(0), &handle);
 
 	if (fd < 0)
 		err_return(UBUS_STATUS_INVALID_ARGUMENT, "Invalid file descriptor");
+
+	if (handle) {
+		fd = dup(fd);
+
+		if (fd < 0)
+			err_return(UBUS_STATUS_UNKNOWN_ERROR,
+			           "Unable to duplicate file descriptor");
+	}
 
 	ubus_request_set_fd(callctx->ctx, &callctx->req, fd);
 

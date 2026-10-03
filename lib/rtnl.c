@@ -1570,8 +1570,13 @@ uc_nl_parse_attrs(struct nl_msg *msg, char *base, const uc_nl_attr_spec_t *attrs
 			continue;
 
 		if (attrs[i].flags & DF_MULTIPLE) {
-			if (!(attrs[i].flags & DF_FLAT))
+			if (!(attrs[i].flags & DF_FLAT)) {
 				nla_nest = nla_nest_start(msg, attrs[i].attr);
+
+				if (!nla_nest)
+					return nla_parse_error(&attrs[i], vm, v,
+						"netlink message is full");
+			}
 
 			if (ucv_type(v) == UC_ARRAY) {
 				for (j = 0; j < ucv_array_length(v); j++) {
@@ -1635,6 +1640,9 @@ uc_nl_parse_rta_nexthop(struct nl_msg *msg, uc_vm_t *vm, uc_value_t *val)
 		return false;
 
 	rta_gateway = nla_reserve(msg, RTA_GATEWAY, sizeof(*rtnh));
+
+	if (!rta_gateway)
+		return false;
 
 	rtnh = nla_data(rta_gateway);
 	rtnh->rtnh_len = sizeof(*rtnh);
@@ -1708,6 +1716,9 @@ uc_nl_parse_rta_multipath(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, cha
 {
 	struct nlattr *rta_multipath = nla_nest_start(msg, spec->attr);
 	size_t i;
+
+	if (!rta_multipath)
+		return nla_parse_error(spec, vm, val, "netlink message is full");
 
 	for (i = 0; i < ucv_array_length(val); i++)
 		if (!uc_nl_parse_rta_nexthop(msg, vm, ucv_array_get(val, i)))
@@ -1992,6 +2003,9 @@ uc_nl_parse_rta_linkinfo(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char
 
 	li_nla = nla_nest_start(msg, spec->attr);
 
+	if (!li_nla)
+		return nla_parse_error(spec, vm, val, "netlink message is full");
+
 	nla_put_string(msg, IFLA_INFO_KIND, kind);
 
 	for (i = 0; i < ARRAY_SIZE(link_types); i++) {
@@ -2008,6 +2022,9 @@ uc_nl_parse_rta_linkinfo(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char
 		info_nla = nla_nest_start(msg, IFLA_INFO_DATA);
 	else
 		info_nla = nla_nest_start(msg, IFLA_INFO_SLAVE_DATA);
+
+	if (!info_nla)
+		return nla_parse_error(spec, vm, val, "netlink message is full");
 
 	if (!uc_nl_parse_attrs(msg, base, attrs, nattrs, vm, val))
 		return false;
@@ -2285,6 +2302,9 @@ uc_nl_parse_rta_encap(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *b
 
 	enc_nla = nla_nest_start(msg, spec->attr);
 
+	if (!enc_nla)
+		return nla_parse_error(spec, vm, val, "netlink message is full");
+
 	if (!uc_nl_parse_attrs(msg, base, attrs, nattrs, vm, val))
 		return false;
 
@@ -2380,11 +2400,17 @@ uc_nl_parse_rta_ipopts(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *
 
 	opt_nla = nla_nest_start(msg, spec->attr);
 
+	if (!opt_nla)
+		return nla_parse_error(spec, vm, val, "netlink message is full");
+
 	j = 0;
 	item = (ucv_type(val) == UC_ARRAY) ? ucv_array_get(val, j++) : val;
 
 	while (true) {
 		type_nla = nla_nest_start(msg, ntype);
+
+		if (!type_nla)
+			return nla_parse_error(spec, vm, val, "netlink message is full");
 
 		for (i = 0; i < nattrs; i++) {
 			v = ucv_object_get(item, attrs[i].key, &exists);
@@ -2470,6 +2496,9 @@ uc_nl_parse_rta_afspec(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *
 
 	nla = nla_reserve(msg, spec->attr, 0);
 
+	if (!nla)
+		return nla_parse_error(spec, vm, val, "netlink message is full");
+
 	ucv_object_foreach(val, type, v) {
 		if (!strcmp(type, "bridge")) {
 			if (rtg->rtgen_family == AF_UNSPEC)
@@ -2542,6 +2571,10 @@ uc_nl_parse_rta_afspec(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *
 		else if (!strcmp(type, "inet")) {
 			af_nla = nla_reserve(msg, AF_INET, link_attrs_af_spec_inet_rta.headsize);
 
+			if (!af_nla)
+				return nla_parse_error(spec, vm, val,
+					"netlink message is full");
+
 			if (!uc_nl_parse_attrs(msg, nla_data(af_nla),
 			                       link_attrs_af_spec_inet_rta.attrs,
 			                       link_attrs_af_spec_inet_rta.nattrs,
@@ -2552,6 +2585,10 @@ uc_nl_parse_rta_afspec(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *
 		}
 		else if (!strcmp(type, "inet6")) {
 			af_nla = nla_reserve(msg, AF_INET6, link_attrs_af_spec_inet6_rta.headsize);
+
+			if (!af_nla)
+				return nla_parse_error(spec, vm, val,
+					"netlink message is full");
 
 			if (!uc_nl_parse_attrs(msg, nla_data(af_nla),
 			                       link_attrs_af_spec_inet6_rta.attrs,

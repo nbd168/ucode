@@ -391,8 +391,11 @@ parse_string(uc_lexer_t *lex, int kind)
 					if (ch == '\\') {
 						err = parse_escape(lex, "^");
 
-						if (err)
+						if (err) {
+							uc_vector_clear(&lex->buffer);
+
 							return err;
+						}
 
 						continue;
 					}
@@ -414,8 +417,11 @@ parse_string(uc_lexer_t *lex, int kind)
 								if (ch == '\\') {
 									err = parse_escape(lex, "");
 
-									if (err)
+									if (err) {
+										uc_vector_clear(&lex->buffer);
+
 										return err;
+									}
 
 									continue;
 								}
@@ -439,8 +445,11 @@ parse_string(uc_lexer_t *lex, int kind)
 			err = parse_escape(lex,
 				(type == TK_REGEXP) ? "^bBdDsSwW<>.[$()|*+?{\\" : "");
 
-			if (err)
+			if (err) {
+				uc_vector_clear(&lex->buffer);
+
 				return err;
+			}
 
 			break;
 

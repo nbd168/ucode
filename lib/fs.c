@@ -3053,7 +3053,17 @@ uc_fs_readfile(uc_vm_t *vm, size_t nargs)
 		if (limit > 0 && blen > (size_t)limit)
 			blen = (size_t)limit;
 
-		printbuf_memset(buf, printbuf_length(buf) + blen - 1, 0, 1);
+		if (printbuf_length(buf) > INT_MAX - (ssize_t)blen) {
+			fclose(fp);
+			printbuf_free(buf);
+			err_return(EFBIG);
+		}
+
+		if (printbuf_memset(buf, printbuf_length(buf) + blen - 1, 0, 1)) {
+			fclose(fp);
+			printbuf_free(buf);
+			err_return(ENOMEM);
+		}
 
 		buf->bpos -= blen;
 		rlen = fread(buf->buf + buf->bpos, 1, blen, fp);

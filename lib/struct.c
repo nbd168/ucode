@@ -2525,7 +2525,7 @@ grow_buffer(uc_vm_t *vm, void **buf, size_t *bufsz, size_t length)
 {
 	const size_t overhead = sizeof(uc_string_t) + 1;
 
-	if (length > *bufsz) {
+	if (length > *bufsz || *buf == NULL) {
 		size_t old_size = *bufsz;
 		size_t new_size = (length + 7u) & ~7u;
 
@@ -2683,13 +2683,19 @@ b64dec(char *dest, size_t *dest_len, const char *src, size_t src_len,
 
 		case BYTE2:
 			dest[dest_off++] |= val >> 4;
-			dest[dest_off] = (val & 0x0f) << 4;
+
+			if (dest_off < *dest_len)
+				dest[dest_off] = (val & 0x0f) << 4;
+
 			state = BYTE3;
 			break;
 
 		case BYTE3:
 			dest[dest_off++] |= val >> 2;
-			dest[dest_off] = (val & 0x03) << 6;
+
+			if (dest_off < *dest_len)
+				dest[dest_off] = (val & 0x03) << 6;
+
 			state = BYTE4;
 			break;
 
@@ -2768,6 +2774,16 @@ b64dec(char *dest, size_t *dest_len, const char *src, size_t src_len,
 
 static const char Base64[] =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static bool
+b64blank(const char *src, size_t src_len)
+{
+	for (size_t i = 0; i < src_len; i++)
+		if (!isspace((unsigned char)src[i]))
+			return false;
+
+	return true;
+}
 
 static size_t
 b64len(const char *src, size_t src_len)
@@ -3031,12 +3047,22 @@ uc_pack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state, size_t argoff,
 				n = ucv_string_length(v);
 				p = ucv_string_get(v);
 
-				size_t len = (size == -1) ? SIZE_MAX : (size_t)size;
+				size_t len = b64len(p, n);
 				const char *err = NULL;
+
+				if (len == 0 && !b64blank(p, n)) {
+					uc_vm_raise_exception(vm, EXCEPTION_TYPE,
+						"Invalid base64 string");
+
+					return false;
+				}
+
+				if (size >= 0 && (size_t)size < len)
+					len = (size_t)size;
 
 				if (!b64dec(res, &len, p, n, &err)) {
 					uc_vm_raise_exception(vm, EXCEPTION_TYPE,
-						"Invalid base64 string: %s", err);
+						"Invalid base64 string: %s", err ? err : "malformed");
 
 					return false;
 				}
@@ -3082,9 +3108,9 @@ static uc_value_t *
 uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
                  const char *buf, long long pos, size_t *rem, bool single)
 {
+	size_t ncode, off, total, fieldoff = 0;
 	uc_value_t *result;
 	formatcode_t *code;
-	size_t ncode, off;
 	ssize_t size, n;
 
 	if (pos < 0)
@@ -3094,7 +3120,8 @@ uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
 		return NULL;
 
 	buf += pos;
-	*rem -= pos;
+	total = *rem - (size_t)pos;
+	*rem = total;
 
 	result = single ? NULL : ucv_array_new(vm);
 
@@ -3102,23 +3129,30 @@ uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
 	     ncode < state->ncodes;
 	     code = &state->codes[++ncode]) {
 		const formatdef_t *e = code->fmtdef;
-		const char *res = buf + code->offset + off;
 		ssize_t j = code->repeat;
+		const char *res;
+
+		fieldoff = code->offset + off;
 
 		while (j--) {
 			uc_value_t *v = NULL;
 
 			size = code->size;
 
+			if (fieldoff > total)
+				goto fail;
+
 			if (e->format == '*' || e->format == 'X' || e->format == 'Z') {
-				if (size == -1 || (size_t)size > *rem)
-					size = *rem;
+				if (size == -1 || (size_t)size > total - fieldoff)
+					size = total - fieldoff;
 
 				off += size;
 			}
-			else if (size >= 0 && (size_t)size > *rem) {
+			else if (size < 0 || (size_t)size > total - fieldoff) {
 				goto fail;
 			}
+
+			res = buf + fieldoff;
 
 			if (e->format == 's' || e->format == '*') {
 				v = ucv_string_new_length(res, size);
@@ -3144,8 +3178,8 @@ uc_unpack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state,
 			if (v == NULL)
 				goto fail;
 
-			res += size;
-			*rem -= size;
+			fieldoff += size;
+			*rem = total - fieldoff;
 
 			if (single)
 				return v;
