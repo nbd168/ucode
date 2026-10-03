@@ -1330,7 +1330,7 @@ native_unpack_ulonglong(uc_vm_t *vm, const char *p, const formatdef_t *f)
 static uc_value_t *
 native_unpack_bool(uc_vm_t *vm, const char *p, const formatdef_t *f)
 {
-	bool x = false;
+	uint8_t x;
 
 	memcpy(&x, p, sizeof(x));
 
@@ -1707,11 +1707,14 @@ be_unpack_int(uc_vm_t *vm, const char *p, const formatdef_t *f)
 {
 	const unsigned char *bytes = (const unsigned char *)p;
 	ssize_t i = f->size;
-	long x = 0;
+	unsigned long ux = 0;
+	long x;
 
 	do {
-		x = (x<<8) | *bytes++;
+		ux = (ux<<8) | *bytes++;
 	} while (--i > 0);
+
+	x = (long)ux;
 
 	/* Extend the sign bit. */
 	if ((ssize_t)sizeof(long) > f->size)
@@ -1739,11 +1742,14 @@ be_unpack_longlong(uc_vm_t *vm, const char *p, const formatdef_t *f)
 {
 	const unsigned char *bytes = (const unsigned char *)p;
 	ssize_t i = f->size;
-	long long x = 0;
+	unsigned long long ux = 0;
+	long long x;
 
 	do {
-		x = (x<<8) | *bytes++;
+		ux = (ux<<8) | *bytes++;
 	} while (--i > 0);
+
+	x = (long long)ux;
 
 	/* Extend the sign bit. */
 	if ((ssize_t)sizeof(long long) > f->size)
@@ -1972,11 +1978,14 @@ le_unpack_int(uc_vm_t *vm, const char *p, const formatdef_t *f)
 {
 	const unsigned char *bytes = (const unsigned char *)p;
 	ssize_t i = f->size;
-	long x = 0;
+	unsigned long ux = 0;
+	long x;
 
 	do {
-		x = (x<<8) | bytes[--i];
+		ux = (ux<<8) | bytes[--i];
 	} while (i > 0);
+
+	x = (long)ux;
 
 	/* Extend the sign bit. */
 	if ((ssize_t)sizeof(long) > f->size)
@@ -2004,11 +2013,14 @@ le_unpack_longlong(uc_vm_t *vm, const char *p, const formatdef_t *f)
 {
 	const unsigned char *bytes = (const unsigned char *)p;
 	ssize_t i = f->size;
-	long long x = 0;
+	unsigned long long ux = 0;
+	long long x;
 
 	do {
-		x = (x<<8) | bytes[--i];
+		ux = (ux<<8) | bytes[--i];
 	} while (i > 0);
+
+	x = (long long)ux;
 
 	/* Extend the sign bit. */
 	if ((ssize_t)sizeof(long long) > f->size)

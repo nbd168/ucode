@@ -350,6 +350,9 @@ uc_io_tcsetattr(uc_vm_t *vm, size_t nargs)
 	if (when_arg && ucv_type(when_arg) == UC_INTEGER)
 		when = (int)ucv_int64_get(when_arg);
 
+	if (tcgetattr(fd, &tios) < 0)
+		err_return(errno);
+
 	/* Update flags from the attrs object */
 	uc_value_t *iflag = ucv_property_get(attrs_arg, "iflag");
 	if (iflag && ucv_type(iflag) == UC_INTEGER)

@@ -383,6 +383,8 @@ parse_reply(uc_vm_t *vm, uc_value_t *res_obj, const unsigned char *msg, size_t l
 	}
 
 	for (i = 0; i < ns_msg_count(handle, ns_s_an); i++) {
+		key = NULL;
+
 		if (ns_parserr(&handle, ns_s_an, i, &rr) != 0) {
 			set_error(errno, "Unable to parse resource record");
 
@@ -490,6 +492,7 @@ parse_reply(uc_vm_t *vm, uc_value_t *res_obj, const unsigned char *msg, size_t l
 
 					if (n > rdlen) {
 						set_error(EBADMSG, "TXT string exceeds record length");
+						ucv_put(values);
 
 						return -1;
 					}
@@ -513,6 +516,7 @@ parse_reply(uc_vm_t *vm, uc_value_t *res_obj, const unsigned char *msg, size_t l
 
 					if (n > rdlen) {
 						set_error(EBADMSG, "TXT string exceeds record length");
+						printbuf_free(buf);
 
 						return -1;
 					}

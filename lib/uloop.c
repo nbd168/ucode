@@ -855,7 +855,11 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 
 	ret = uloop_fd_add(&handle->fd, (unsigned int)f);
 	if (ret != 0) {
-		ucv_put(handle->cb.obj);
+		uc_value_t *obj = handle->cb.obj;
+
+		uc_uloop_cb_free(&handle->cb);
+		ucv_put(obj);
+
 		err_return(errno);
 	}
 
@@ -1440,8 +1444,8 @@ patch_devnull(int fd, bool write)
 	int devnull = open("/dev/null", write ? O_WRONLY : O_RDONLY);
 
 	if (devnull != -1) {
-		dup2(fd, devnull);
-		close(fd);
+		dup2(devnull, fd);
+		close(devnull);
 	}
 
 	return devnull;
@@ -1463,11 +1467,10 @@ uc_uloop_task_clear(uc_uloop_task_t *task)
 	if (task->input_fd >= 0) {
 		close(task->input_fd);
 		task->input_fd = -1;
-
-		uloop_fd_close(&task->output);
-		uloop_process_delete(&task->process);
 	}
 
+	uloop_fd_close(&task->output);
+	uloop_process_delete(&task->process);
 	uc_uloop_cb_free(&task->cb);
 }
 
@@ -1760,7 +1763,7 @@ uc_uloop_task(uc_vm_t *vm, size_t nargs)
 	task->output.fd = outpipe[0];
 	task->output.cb = uc_uloop_task_output_cb;
 	task->output_cb = output_cb;
-	uloop_fd_add(&task->output, ULOOP_READ);
+	uloop_fd_add(&task->output, ULOOP_READ | ULOOP_BLOCKING);
 
 	if (input_cb) {
 		task->input_fd = inpipe[1];

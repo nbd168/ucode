@@ -359,17 +359,22 @@ uc_zlib_inf_object(uc_vm_t *const vm, uc_value_t * const obj, zstrm_t * const zs
 		zstrm->strm.next_in = (unsigned char *)ucv_string_get(rbuf);
 		zstrm->strm.avail_in = ucv_string_length(rbuf);
 
-		ret = inf_chunks(zstrm);
-		switch (ret) {
-		case Z_NEED_DICT:
-		case Z_DATA_ERROR:
-		case Z_MEM_ERROR:
-			goto out;
-		}
+		do {
+			if (ret == Z_STREAM_END && inflateReset(&zstrm->strm) != Z_OK)
+				goto out;
+
+			ret = inf_chunks(zstrm);
+			switch (ret) {
+			case Z_NEED_DICT:
+			case Z_DATA_ERROR:
+			case Z_MEM_ERROR:
+				goto out;
+			}
+		} while (ret == Z_STREAM_END && zstrm->strm.avail_in > 0);
 
 		ucv_put(rbuf);	// release rbuf
 		rbuf = NULL;
-	} while (ret != Z_STREAM_END);	// done when inflate() says it's done
+	} while (true);
 
 	rv = (ret == Z_STREAM_END);	// data error otherwise
 
@@ -387,8 +392,16 @@ uc_zlib_inf_string(uc_vm_t * const vm, uc_value_t * const str, zstrm_t * const z
 	zstrm->strm.next_in = (unsigned char *)ucv_string_get(str);
 	zstrm->strm.avail_in = ucv_string_length(str);
 
-	ret = inf_chunks(zstrm);
-	assert(zstrm->strm.avail_in == 0);
+	while (true) {
+		ret = inf_chunks(zstrm);
+
+		if (ret != Z_STREAM_END || zstrm->strm.avail_in == 0)
+			break;
+
+		if (inflateReset(&zstrm->strm) != Z_OK)
+			break;
+	}
+
 	last_error = ret;
 
 	return Z_STREAM_END == ret;
