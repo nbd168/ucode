@@ -1,0 +1,15 @@
+# glibc 2.43 inet_pton6(): the '::' compression step uses memmove() on its
+# internal 16-byte scratch buffer, which GCC compiles (via the fortified
+# __builtin___memmove_chk) into a __memcpy_chk() call. For inputs where the
+# compressed region overlaps (e.g. "fe80::211:22ff:fe33:4455"), valgrind
+# reports "Source and destination overlap in memcpy_chk". The runtime result
+# is correct (the copy is a single machine instruction for the sizes
+# involved), so this is a false positive inside glibc.
+{
+   glibc_inet_pton6_memmove_overlap
+   Memcheck:Overlap
+   fun:__memcpy_chk
+   fun:memmove
+   fun:inet_pton6
+   fun:__inet_pton_length
+}

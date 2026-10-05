@@ -124,6 +124,17 @@
 #define ok_return(expr) do { set_error(0, NULL); return (expr); } while(0)
 #define err_return(err, ...) do { set_error(err, __VA_ARGS__); return NULL; } while(0)
 
+static char *
+uc_cast_string(uc_vm_t *vm, uc_value_t **v, bool *freeable) {
+	if (ucv_type(*v) == UC_STRING) {
+		*freeable = false;
+		return ucv_string_get(*v);
+	}
+
+	*freeable = true;
+	return ucv_to_string(vm, *v);
+}
+
 static struct {
 	int code;
 	char *msg;
@@ -324,19 +335,24 @@ hwaddr_to_uv(uint8_t *addr, size_t alen)
 }
 
 static bool
-uv_to_hwaddr(uc_value_t *addr, uint8_t *out, size_t *outlen)
+uv_to_hwaddr(uc_vm_t *vm, uc_value_t *addr, uint8_t *out, size_t *outlen)
 {
+	uc_value_t *v = addr;
+	bool freeable;
+	char *s;
 	const char *p;
 	size_t len;
 
 	memset(out, 0, 8);
 	*outlen = 0;
 
-	if (ucv_type(addr) != UC_STRING)
-		goto err;
+	s = uc_cast_string(vm, &v, &freeable);
 
-	len = ucv_string_length(addr);
-	p = ucv_string_get(addr);
+	if (!s)
+		err_return(EINVAL, "Invalid hardware address");
+
+	p = s;
+	len = (freeable) ? strlen(s) : ucv_string_length(v);
 
 	while (len > 0 && isxdigit(*p) && *outlen < 8) {
 		uint8_t n = (*p > '9') ? 10 + (*p|32) - 'a' : *p - '0';
@@ -353,10 +369,16 @@ uv_to_hwaddr(uc_value_t *addr, uint8_t *out, size_t *outlen)
 		out[(*outlen)++] = n;
 	}
 
-	if (len == 0 || *p == 0)
-		return true;
+	if (len == 0 || *p == 0) {
+		if (freeable)
+			free(s);
 
-err:
+		return true;
+	}
+
+	if (freeable)
+		free(s);
+
 	err_return(EINVAL, "Invalid hardware address");
 }
 #endif
@@ -546,7 +568,7 @@ parse_addr(char *addr, struct sockaddr_storage *ss)
 }
 
 static bool
-uv_to_sockaddr(uc_value_t *addr, struct sockaddr_storage *ss, socklen_t *slen)
+uv_to_sockaddr(uc_vm_t *vm, uc_value_t *addr, struct sockaddr_storage *ss, socklen_t *slen)
 {
 	char *s, *p, addrstr[sizeof("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255%interface012345")];
 	struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ss;
@@ -562,9 +584,45 @@ uv_to_sockaddr(uc_value_t *addr, struct sockaddr_storage *ss, socklen_t *slen)
 
 	memset(ss, 0, sizeof(*ss));
 
-	if (ucv_type(addr) == UC_STRING) {
+	if (ucv_type(addr) != UC_STRING && ucv_type(addr) != UC_ARRAY &&
+	    ucv_type(addr) != UC_OBJECT) {
+		/*
+		 * accept any value with a tostring() metamethod (e.g. netaddr.range)
+		 * by stringifying it first
+		 */
+		char *sbuf = ucv_to_string(vm, addr);
+
+		if (!sbuf)
+			err_return(EINVAL, "Invalid address value");
+
+		if (strlen(sbuf) >= sizeof(addrstr)) {
+			free(sbuf);
+			err_return(EINVAL, "Invalid address value");
+		}
+
+		memcpy(addrstr, sbuf, strlen(sbuf) + 1);
+		free(sbuf);
+
+		s = addrstr;
+		len = strlen(addrstr);
+	}
+	else if (ucv_type(addr) == UC_STRING) {
 		s = ucv_string_get(addr);
 		len = ucv_string_length(addr);
+	}
+	else {
+		/*
+		 * array and object types are handled below;
+		 * for those, s/len are not used in the string path
+		 */
+		s = NULL;
+		len = 0;
+	}
+
+	if (s != NULL) {
+		/*
+		 * string address parsing (also used for stringified resources)
+		 */
 
 		if (memchr(s, '/', len) != NULL) {
 			if (len >= sizeof(su->sun_path))
@@ -692,9 +750,18 @@ uv_to_sockaddr(uc_value_t *addr, struct sockaddr_storage *ss, socklen_t *slen)
 			}
 			else {
 				item = ucv_object_get(addr, "address", NULL);
-				len = ucv_string_length(item);
-				s = ucv_string_get(item);
-				n = (s && memchr(s, ':', len) != NULL) ? AF_INET6 : AF_INET;
+
+				if (item) {
+					bool freeable;
+					char *s = uc_cast_string(vm, &item, &freeable);
+
+					if (s)
+						n = (memchr(s, ':', freeable ? strlen(s) : ucv_string_length(item)) != NULL)
+						    ? AF_INET6 : AF_INET;
+
+					if (freeable)
+						free(s);
+				}
 			}
 
 			if (n == 0)
@@ -737,18 +804,32 @@ uv_to_sockaddr(uc_value_t *addr, struct sockaddr_storage *ss, socklen_t *slen)
 			s6->sin6_port = htons(n);
 
 			item = ucv_object_get(addr, "address", NULL);
-			len = ucv_string_length(item);
-			s = ucv_string_get(item);
 
-			if (len >= sizeof(addrstr))
-				err_return(EINVAL, "Invalid IP address");
+			if (item) {
+				bool freeable;
+				char *as = uc_cast_string(vm, &item, &freeable);
+				size_t alen = (freeable) ? strlen(as) : ucv_string_length(item);
 
-			if (len > 0) {
-				memcpy(addrstr, s, len);
-				addrstr[len] = 0;
+				if (as && alen < sizeof(addrstr)) {
+					memcpy(addrstr, as, alen);
+					addrstr[alen] = 0;
 
-				if (!parse_addr(addrstr, ss))
-					return NULL;
+					if (alen > 0 && !parse_addr(addrstr, ss)) {
+						if (freeable)
+							free(as);
+
+						return NULL;
+					}
+				}
+				else if (as && alen >= sizeof(addrstr)) {
+					if (freeable)
+						free(as);
+
+					err_return(EINVAL, "Invalid IP address");
+				}
+
+				if (freeable)
+					free(as);
 			}
 
 			ok_return(true);
@@ -782,7 +863,7 @@ uv_to_sockaddr(uc_value_t *addr, struct sockaddr_storage *ss, socklen_t *slen)
 
 			item = ucv_object_get(addr, "address", NULL);
 
-			if (uv_to_hwaddr(item, sl->sll_addr, &len))
+			if (uv_to_hwaddr(vm, item, sl->sll_addr, &len))
 				sl->sll_halen = len;
 			else
 				return false;
@@ -1477,12 +1558,38 @@ static bool
 mr_address_to_c(void *st, uc_value_t *uv)
 {
 	struct packet_mreq *mr = *(struct packet_mreq **)st;
+	const char *p;
 	size_t len;
+	uint8_t *out = mr->mr_address;
+	size_t outlen = 0;
 
-	if (!uv_to_hwaddr(uv, mr->mr_address, &len))
+	if (ucv_type(uv) != UC_STRING)
 		return false;
 
-	mr->mr_alen = len;
+	p = ucv_string_get(uv);
+	len = ucv_string_length(uv);
+
+	memset(out, 0, 8);
+
+	while (len > 0 && isxdigit(*p) && outlen < 8) {
+		uint8_t n = (*p > '9') ? 10 + (*p|32) - 'a' : *p - '0';
+		p++, len--;
+
+		if (len > 0 && isxdigit(*p)) {
+			n = n * 16 + ((*p > '9') ? 10 + (*p|32) - 'a' : *p - '0');
+			p++, len--;
+		}
+
+		if (len > 0 && (*p == ':' || *p == '-' || *p == '.'))
+			p++, len--;
+
+		out[outlen++] = n;
+	}
+
+	if (len != 0 && *p != 0)
+		return false;
+
+	mr->mr_alen = outlen;
 
 	return true;
 }
@@ -1843,10 +1950,10 @@ static cmsgtype_t cmsgtypes[] = {
 
 
 static char *
-uv_to_struct(uc_value_t *uv, struct_t *spec)
+uv_to_struct(uc_vm_t *vm, uc_value_t *uv, struct_t *spec)
 {
 	uc_value_t *fv;
-	const char *s;
+	char *s;
 	uint64_t u64;
 	int64_t s64;
 	member_t *m;
@@ -1913,27 +2020,45 @@ uv_to_struct(uc_value_t *uv, struct_t *spec)
 			memcpy(st + m->u1.offset, &v, m->u2.size);
 			break;
 
-		case DT_IPV4ADDR:
-			s = ucv_string_get(fv);
+		case DT_IPV4ADDR: {
+			bool freeable;
+
+			s = uc_cast_string(vm, &fv, &freeable);
 
 			if (!s || inet_pton(AF_INET, s, st + m->u1.offset) != 1) {
+				if (freeable)
+					free(s);
+
 				free(st);
 				err_return(EINVAL,
 					"Unable to convert field %s to IP address", m->name);
 			}
 
-			break;
+			if (freeable)
+				free(s);
 
-		case DT_IPV6ADDR:
-			s = ucv_string_get(fv);
+			break;
+		}
+
+		case DT_IPV6ADDR: {
+			bool freeable;
+
+			s = uc_cast_string(vm, &fv, &freeable);
 
 			if (!s || inet_pton(AF_INET6, s, st + m->u1.offset) != 1) {
+				if (freeable)
+					free(s);
+
 				free(st);
 				err_return(EINVAL,
 					"Unable to convert field %s to IPv6 address", m->name);
 			}
 
+			if (freeable)
+				free(s);
+
 			break;
+		}
 
 		case DT_CALLBACK:
 			if (m->u1.to_c && !m->u1.to_c(&st, fv)) {
@@ -2131,7 +2256,7 @@ uc_socket_inst_setopt(uc_vm_t *vm, size_t nargs)
 			break;
 
 		default:
-			st = uv_to_struct(value, sockopts[i].ctype);
+			st = uv_to_struct(vm, value, sockopts[i].ctype);
 			valptr = st;
 			vallen = sockopts[i].ctype->size;
 			break;
@@ -2502,7 +2627,7 @@ uc_socket_sockaddr(uc_vm_t *vm, size_t nargs)
 	args_get(vm, nargs, NULL,
 		"address", UC_NULL, false, &addr);
 
-	if (!uv_to_sockaddr(addr, &ss, &slen))
+	if (!uv_to_sockaddr(vm, addr, &ss, &slen))
 		return NULL;
 
 	rv = ucv_object_new(vm);
@@ -2560,7 +2685,7 @@ uc_socket_nameinfo(uc_vm_t *vm, size_t nargs)
 		"address", UC_NULL, false, &addr,
 		"flags", UC_INTEGER, true, &flags);
 
-	if (!uv_to_sockaddr(addr, &ss, &slen))
+	if (!uv_to_sockaddr(vm, addr, &ss, &slen))
 		return NULL;
 
 	ret = getnameinfo((struct sockaddr *)&ss, slen,
@@ -2638,7 +2763,7 @@ uc_socket_addrinfo(uc_vm_t *vm, size_t nargs)
 		"hints", UC_OBJECT, true, &hints);
 
 	if (hints) {
-		ai_hints = (struct addrinfo *)uv_to_struct(hints, &st_addrinfo);
+		ai_hints = (struct addrinfo *)uv_to_struct(vm, hints, &st_addrinfo);
 
 		if (!ai_hints)
 			return NULL;
@@ -2875,7 +3000,7 @@ uc_socket_connect(uc_vm_t *vm, size_t nargs)
 		"timeout", UC_INTEGER, true, &timeout);
 
 	ai_hints = hints
-		? (struct addrinfo *)uv_to_struct(hints, &st_addrinfo) : NULL;
+		? (struct addrinfo *)uv_to_struct(vm, hints, &st_addrinfo) : NULL;
 
 	if (should_resolve(host)) {
 		char *servstr = (ucv_type(serv) != UC_STRING)
@@ -2912,7 +3037,7 @@ uc_socket_connect(uc_vm_t *vm, size_t nargs)
 		uc_vector_grow(&addresses);
 		ap = &addresses.entries[addresses.count++];
 
-		if (!uv_to_sockaddr(host, &ap->ss, &ap->ai.ai_addrlen)) {
+		if (!uv_to_sockaddr(vm, host, &ap->ss, &ap->ai.ai_addrlen)) {
 			free(ai_hints);
 			uc_vector_clear(&addresses);
 			return NULL;
@@ -3112,7 +3237,7 @@ uc_socket_listen(uc_vm_t *vm, size_t nargs)
 		"reuseaddr", UC_BOOLEAN, true, &reuseaddr);
 
 	ai_hints = hints
-		? (struct addrinfo *)uv_to_struct(hints, &st_addrinfo) : NULL;
+		? (struct addrinfo *)uv_to_struct(vm, hints, &st_addrinfo) : NULL;
 
 	if (host == NULL || should_resolve(host)) {
 		char *servstr = (ucv_type(serv) != UC_STRING)
@@ -3159,7 +3284,7 @@ uc_socket_listen(uc_vm_t *vm, size_t nargs)
 		freeaddrinfo(ai_results);
 	}
 	else {
-		if (!uv_to_sockaddr(host, &ss, &slen)) {
+		if (!uv_to_sockaddr(vm, host, &ss, &slen)) {
 			free(ai_hints);
 			return NULL;
 		}
@@ -3493,7 +3618,7 @@ uc_socket_inst_connect(uc_vm_t *vm, size_t nargs)
 		"address", UC_NULL, false, &addr,
 		"port", UC_INTEGER, true, &port);
 
-	if (!uv_to_sockaddr(addr, &ss, &slen))
+	if (!uv_to_sockaddr(vm, addr, &ss, &slen))
 		return NULL;
 
 	if (port) {
@@ -3580,7 +3705,7 @@ uc_socket_inst_send(uc_vm_t *vm, size_t nargs)
 		"address", UC_NULL, true, &addr);
 
 	if (addr) {
-		if (!uv_to_sockaddr(addr, &ss, &salen))
+		if (!uv_to_sockaddr(vm, addr, &ss, &salen))
 			return NULL;
 
 		sa = (struct sockaddr *)&ss;
@@ -3917,7 +4042,7 @@ encode_cmsg(uc_vm_t *vm, uc_value_t *uv, struct cmsghdr *cmsg)
 			break;
 
 		case (uintptr_t)CV_SOCKADDR:
-			if (uv_to_sockaddr(data, &val.ss, &datasz))
+			if (uv_to_sockaddr(vm, data, &val.ss, &datasz))
 				dataptr = &val;
 			else
 				datasz = 0, dataptr = NULL;
@@ -3943,7 +4068,7 @@ encode_cmsg(uc_vm_t *vm, uc_value_t *uv, struct cmsghdr *cmsg)
 			break;
 
 		default:
-			st = uv_to_struct(data, cmsgtypes[i].ctype);
+			st = uv_to_struct(vm, data, cmsgtypes[i].ctype);
 			datasz = st ? cmsgtypes[i].ctype->size : 0;
 			dataptr = st;
 			break;
@@ -4160,7 +4285,7 @@ uc_socket_inst_sendmsg(uc_vm_t *vm, size_t nargs)
 	}
 
 	/* prepare address */
-	if (addr && uv_to_sockaddr(addr, &ss, &slen)) {
+	if (addr && uv_to_sockaddr(vm, addr, &ss, &slen)) {
 		msg.msg_name = &ss;
 		msg.msg_namelen = slen;
 	}
@@ -4475,7 +4600,7 @@ uc_socket_inst_bind(uc_vm_t *vm, size_t nargs)
 		"port", UC_INTEGER, true, &port);
 
 	if (addr) {
-		if (!uv_to_sockaddr(addr, &ss, &slen))
+		if (!uv_to_sockaddr(vm, addr, &ss, &slen))
 			return NULL;
 
 		if (port) {

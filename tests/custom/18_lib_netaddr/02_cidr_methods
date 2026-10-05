@@ -1,0 +1,146 @@
+CIDR method behavior: network, mask, broadcast, host, minhost,
+maxhost, size, mapped4, unscoped, tomac and tolinklocal. Methods
+return new netaddr.range instances or null where the operation is not
+applicable.
+
+-- Testcase --
+import * as netaddr from 'netaddr';
+
+let a = netaddr.new("192.168.1.1/24");
+print(a.network(), "\n");
+print(a.mask(), "\n");
+print(a.broadcast(), "\n");
+print(a.host, "\n");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+
+a = netaddr.new("10.0.0.1/8");
+print(a.network(), "\n");
+print(a.mask(), "\n");
+print(a.broadcast(), "\n");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+
+a = netaddr.new("255.255.255.255/32");
+print(a.network(), "\n");
+print(a.broadcast(), "\n");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+
+a = netaddr.new("10.0.0.0/31");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+
+a = netaddr.new("192.168.1.7/31");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+
+a = netaddr.new("0.0.0.0/0");
+print(a.network(), "\n");
+print(a.mask(), "\n");
+print(a.broadcast(), "\n");
+
+a = netaddr.new("2001:db8::1/32");
+print(a.network(), "\n");
+print(a.mask(), "\n");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+print(a.broadcast() == null, "\n");
+
+a = netaddr.new("2001:db8::1/128");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+
+a = netaddr.new("fe80::1%lo");
+print(a.unscoped(), "\n");
+print(a.network(), "\n");
+
+a = netaddr.new("::ffff:192.168.1.1");
+print(a.mapped4, "\n");
+print(netaddr.new("ffff::192.168.1.1").mapped4 == null, "\n");
+print(netaddr.new("2001:db8::1").mapped4 == null, "\n");
+
+a = netaddr.new("fe80::211:22ff:fe33:4455");
+print(a.tomac(), "\n");
+print(netaddr.new("fe80::1").tomac() == null, "\n");
+print(netaddr.new("192.168.1.1").tomac() == null, "\n");
+
+a = netaddr.new("00:11:22:33:44:55");
+print(a.tolinklocal(), "\n");
+print(netaddr.new("192.168.1.1").tolinklocal() == null, "\n");
+
+a = netaddr.new("00:11:22:33:44:55/16");
+print(a.network(), "\n");
+print(a.mask(), "\n");
+print(a.minhost(), "\n");
+print(a.maxhost(), "\n");
+
+print(netaddr.new("192.168.1.0/24").size, "\n");
+print(netaddr.new("10.0.0.0/0").size, "\n");
+print(netaddr.new("10.0.0.1/32").size, "\n");
+print(netaddr.new("10.0.0.0/31").size, "\n");
+print(netaddr.new("2001:db8::1/128").size, "\n");
+print(netaddr.new("2001:db8::/64").size == null, "\n");
+print(netaddr.new("2001:db8::/65").size == null, "\n");
+print(netaddr.new("2001:db8::/66").size, "\n");
+print(netaddr.new("00:11:22:33:44:55/16").size, "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+192.168.1.0
+255.255.255.0
+192.168.1.255
+192.168.1.1
+192.168.1.1
+192.168.1.254
+10.0.0.0
+255.0.0.0
+10.255.255.255
+10.0.0.1
+10.255.255.254
+255.255.255.255
+255.255.255.255
+255.255.255.255
+255.255.255.255
+10.0.0.0
+10.0.0.1
+192.168.1.6
+192.168.1.7
+0.0.0.0
+0.0.0.0
+255.255.255.255
+2001:db8::
+ffff:ffff::
+2001:db8::1
+2001:db8:ffff:ffff:ffff:ffff:ffff:ffff
+true
+2001:db8::1
+2001:db8::1
+fe80::1
+fe80::1%lo
+192.168.1.1
+true
+true
+00:11:22:33:44:55
+true
+true
+fe80::211:22ff:fe33:4455
+true
+00:11:00:00:00:00
+FF:FF:00:00:00:00
+00:11:00:00:00:01
+00:11:FF:FF:FF:FF
+256
+4294967296
+1
+2
+1
+true
+true
+4611686018427387904
+4294967296
+-- End --
