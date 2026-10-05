@@ -233,6 +233,17 @@
 
 #define err_return(code, ...) do { set_error(code, __VA_ARGS__); return NULL; } while(0)
 
+static char *
+uc_cast_string(uc_vm_t *vm, uc_value_t **v, bool *freeable) {
+	if (ucv_type(*v) == UC_STRING) {
+		*freeable = false;
+		return ucv_string_get(*v);
+	}
+
+	*freeable = true;
+	return ucv_to_string(vm, *v);
+}
+
 static struct {
 	int code;
 	char *msg;
@@ -1161,7 +1172,7 @@ add_queries(resolve_ctx_t *ctx, uc_value_t *name)
 }
 
 static bool
-parse_options(resolve_ctx_t *ctx, uc_value_t *opts)
+parse_options(uc_vm_t *vm, resolve_ctx_t *ctx, uc_value_t *opts)
 {
 	uc_value_t *v;
 
@@ -1169,12 +1180,17 @@ parse_options(resolve_ctx_t *ctx, uc_value_t *opts)
 		return false;
 
 	for_each_item(ucv_object_get(opts, "nameserver", NULL), server) {
-		if (ucv_type(server) != UC_STRING)
-			err_return(EINVAL, "Nameserver value not a string");
+		bool freeable;
+		char *s = uc_cast_string(vm, &server, &freeable);
 
-		if (!add_ns(ctx, ucv_string_get(server)))
-			err_return(EINVAL, "Unable to resolve nameserver address '%s'",
-			           ucv_string_get(server));
+		if (!s)
+			err_return(EINVAL, "Nameserver value could not be converted");
+
+		if (!add_ns(ctx, s))
+			err_return(EINVAL, "Unable to resolve nameserver address '%s'", s);
+
+		if (freeable)
+			free(s);
 	}
 
 	/* Find NS servers in resolv.conf if none provided */
@@ -1358,16 +1374,31 @@ uc_resolv_query(uc_vm_t *vm, size_t nargs)
 	uc_value_t *opts = uc_fn_arg(1);
 	uc_value_t *res_obj = NULL;
 
-	if (!parse_options(&ctx, opts))
+	if (!parse_options(vm, &ctx, opts))
 		goto err;
 
 	for_each_item(names, name) {
+		uc_value_t *tmp = NULL;
+
 		if (ucv_type(name) != UC_STRING) {
-			set_error(EINVAL, "Domain name value not a string");
-			goto err;
+			char *s = ucv_to_string(vm, name);
+
+			if (!s) {
+				set_error(EINVAL, "Domain name value could not be converted");
+				goto err;
+			}
+
+			tmp = ucv_string_new(s);
+
+			free(s);
+
+			name = tmp;
 		}
 
 		add_queries(&ctx, name);
+
+		if (tmp)
+			ucv_put(tmp);
 	}
 
 	res_obj = ucv_object_new(vm);

@@ -1,0 +1,428 @@
+The netaddr module provides CIDR address handling (IPv4, IPv6, MAC) as a
+port of the LuCI luci-lib-ip library. Addresses are represented by
+netaddr.range resource instances created through the netaddr.new(), netaddr.v4(),
+netaddr.v6() and netaddr.mac() constructors, which accept address strings,
+unsigned numbers, byte arrays (length 4 = IPv4, 6 = MAC, 16 = IPv6)
+or sockaddr-like objects ({ address, family, interface }) and raise a
+runtime exception on invalid input.
+
+-- Testcase --
+import * as netaddr from 'netaddr';
+
+print(netaddr.new("192.168.1.1"), "\n");
+print(netaddr.new("192.168.1.1/24"), "\n");
+print(netaddr.new("10.0.0.1/255.255.0.0"), "\n");
+print(netaddr.new("10.0.0.1", "255.255.0.0"), "\n");
+print(netaddr.new("10.0.0.1/16", 8), "\n");
+print(netaddr.new("2001:db8::1"), "\n");
+print(netaddr.new("2001:0db8:0000:0000:0000:0000:0000:0001"), "\n");
+print(netaddr.new("2001:db8::1/64"), "\n");
+print(netaddr.new("fe80::1%lo"), "\n");
+print(netaddr.new("ffff::192.168.1.1"), "\n");
+print(netaddr.new("::"), "\n");
+print(netaddr.new("::1"), "\n");
+print(netaddr.new("00:11:22:33:44:55"), "\n");
+print(netaddr.new("00:11:22:33:44:55/16"), "\n");
+print(netaddr.new(0x01020304), "\n");
+print(netaddr.v4(0x01020304), "\n");
+print(netaddr.v6(1), "\n");
+print(netaddr.mac(0x001122334455), "\n");
+print(netaddr.new(0x001122334455, 16), "\n");
+print(netaddr.new([ 10, 24, 0, 1 ]), "\n");
+print(netaddr.new([ 0, 0x11, 0x22, 0xcc, 0xdd, 0xee ]), "\n");
+print(netaddr.new([ 0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 ]), "\n");
+print(netaddr.v4([ 192, 168, 1, 1 ]), "\n");
+print(netaddr.v6([ 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1 ]), "\n");
+print(netaddr.mac([ 0xc0, 0xb6, 0xf9, 0, 0, 0 ]), "\n");
+print(netaddr.new([ 1, 2, 3, 4 ])[0], "\n");
+print(netaddr.new([ 1, 2, 3, 4 ]).family, "\n");
+print(netaddr.new([ 1, 2, 3, 4 ]).bits, "\n");
+print(netaddr.new([ 10, 0, 0, 1 ], 24).string(), "\n");
+print(netaddr.new({ address: "192.168.1.1" }), "\n");
+print(netaddr.new({ address: "2001:db8::1" }), "\n");
+print(netaddr.new({ family: 2, address: "10.0.0.1" }), "\n");
+print(netaddr.new({ family: 10, address: "fe80::1" }), "\n");
+print(netaddr.new({ family: 17, address: "00:11:22:33:44:55" }), "\n");
+print(netaddr.new({ family: 10, address: "fe80::1", interface: "lo" }), "\n");
+print(netaddr.new({ address: "fe80::1", interface: 1 }), "\n");
+print(netaddr.new({ address: "fe80::1", interface: 1 }).scope, "\n");
+print(netaddr.new({ address: "10.0.0.1/24" }), "\n");
+print(netaddr.new({ address: "fe80::1/64" }), "\n");
+print(netaddr.v4({ address: "1.2.3.4" }), "\n");
+print(netaddr.v6({ address: "fe80::2", interface: "lo" }), "\n");
+print(netaddr.mac({ family: 17, address: "aa:bb:cc:dd:ee:ff" }), "\n");
+print(netaddr.new({ family: 10, address: "fe80::1", interface: "lo" }).scope, "\n");
+print(netaddr.new({ address: "10.0.0.1" }, 24).string(), "\n");
+print(netaddr.v4("1.2.3.4", 24), "\n");
+print(netaddr.new("1.2.3.4").bits, "\n");
+print(netaddr.new("1.2.3.4/24").bits, "\n");
+print(netaddr.new("2001:db8::1/64").bits, "\n");
+print(netaddr.new("1.2.3.4").family, "\n");
+print(netaddr.new("2001:db8::1").family, "\n");
+print(netaddr.new("00:11:22:33:44:55").family, "\n");
+print(netaddr.new("fe80::1%lo").scope, "\n");
+print(netaddr.new("1.2.3.4").scope, "\n");
+print(netaddr.checkv4("1.2.3.4"), "\n");
+print(netaddr.checkv4("1.2.3.4/24"), "\n");
+print(netaddr.checkv4("999.1.1.1") == null, "\n");
+print(netaddr.checkv6("::1"), "\n");
+print(netaddr.checkv6("1.2.3.4") == null, "\n");
+print(netaddr.checkmac("00:11:22:33:44:55"), "\n");
+print(netaddr.checkmac("00:11:22:33:44") == null, "\n");
+
+a = netaddr.new("192.168.1.1/24");
+print(a.bits, ", ", a.family, ", ", a.netmask, "\n");
+print(a[0], ", ", a[-1], "\n");
+
+a = netaddr.v6("fe80::1%lo");
+print(a.scope, ", ", a.scopeid, ", ", a.bits, ", ", a.netmask, "\n");
+
+a = netaddr.mac("00:11:22:33:44:55");
+print(a.family, ", ", a.bits, ", ", a.netmask, ", ", a.scope, "\n");
+
+a.scope = 42;
+print(a.scope, ", ", a.scopeid, "\n");
+
+a.scope = 3;
+print(a.scope, "\n");
+
+a.scopeid = "lo";
+print(a.scopeid, ", ", a, "\n");
+
+a.scopeid = 1;
+print(a.scopeid, "\n");
+
+a.bits = 33;
+print(a.bits, "\n");
+
+a.bits = 16;
+print(a.bits, ", ", a[0], "\n");
+
+a[3] = 200;
+print(a, "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+192.168.1.1
+192.168.1.1/24
+10.0.0.1/16
+10.0.0.1/16
+10.0.0.1/8
+2001:db8::1
+2001:db8::1
+2001:db8::1/64
+fe80::1%lo
+ffff::c0a8:101
+::
+::1
+00:11:22:33:44:55
+00:11:22:33:44:55/16
+00:00:01:02:03:04
+1.2.3.4
+::1
+00:00:22:33:44:55
+00:00:22:33:44:55
+10.24.0.1
+00:11:22:CC:DD:EE
+fe80::1
+192.168.1.1
+2001:db8::1
+C0:B6:F9:00:00:00
+1
+4
+32
+10.0.0.1
+192.168.1.1
+2001:db8::1
+10.0.0.1
+fe80::1
+00:11:22:33:44:55
+fe80::1%lo
+fe80::1%lo
+1
+10.0.0.1/24
+fe80::1/64
+1.2.3.4
+fe80::2%lo
+AA:BB:CC:DD:EE:FF
+1
+10.0.0.1
+1.2.3.4/24
+32
+24
+64
+4
+6
+1
+1
+0
+1.2.3.4
+1.2.3.4/24
+true
+::1
+true
+00:11:22:33:44:55
+true
+24, 4, 255.255.255.0
+192, 1
+1, lo, 128, ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+1, 48, FF:FF:FF:FF:FF:FF, 0
+42, 
+3
+lo, 00:11:22:33:44:55%lo
+lo
+33
+16, 0
+00:11:22:C8:44:55%lo/16
+-- End --
+
+-- Testcase --
+import * as netaddr from 'netaddr';
+
+try {
+	netaddr.new("bogus");
+	print("no error\n");
+}
+catch (e) {
+	print("new: ", e.message, "\n");
+}
+
+try {
+	netaddr.v4("2001:db8::1");
+	print("no error\n");
+}
+catch (e) {
+	print("IPv4: ", e.message, "\n");
+}
+
+try {
+	netaddr.v6("1.2.3.4");
+	print("no error\n");
+}
+catch (e) {
+	print("IPv6: ", e.message, "\n");
+}
+
+try {
+	netaddr.mac("1.2.3.4");
+	print("no error\n");
+}
+catch (e) {
+	print("MAC: ", e.message, "\n");
+}
+
+try {
+	netaddr.new("1.2.3.4", 99);
+	print("no error\n");
+}
+catch (e) {
+	print("mask: ", e.message, "\n");
+}
+
+try {
+	netaddr.new("1.2.3.4", "bogus");
+	print("no error\n");
+}
+catch (e) {
+	print("maskstr: ", e.message, "\n");
+}
+
+try {
+	netaddr.new([ 1, 2, 3, 4, 5 ]);
+	print("no error\n");
+}
+catch (e) {
+	print("arr5: ", e.message, "\n");
+}
+
+try {
+	netaddr.new([]);
+	print("no error\n");
+}
+catch (e) {
+	print("arr0: ", e.message, "\n");
+}
+
+try {
+	netaddr.v4([ 0, 11, 22, 33, 44, 55 ]);
+	print("no error\n");
+}
+catch (e) {
+	print("v4mac: ", e.message, "\n");
+}
+
+try {
+	netaddr.v6([ 1, 2, 3, 4 ]);
+	print("no error\n");
+}
+catch (e) {
+	print("v6v4: ", e.message, "\n");
+}
+
+try {
+	netaddr.v4([ 1, 2, 3, 256 ]);
+	print("no error\n");
+}
+catch (e) {
+	print("big: ", e.message, "\n");
+}
+
+try {
+	netaddr.v4([ 1, 2, 3, -1 ]);
+	print("no error\n");
+}
+catch (e) {
+	print("neg: ", e.message, "\n");
+}
+
+try {
+	netaddr.v4([ 1, 2, 3, "4" ]);
+	print("no error\n");
+}
+catch (e) {
+	print("str: ", e.message, "\n");
+}
+
+try {
+	netaddr.new({ family: 2 });
+	print("no error\n");
+}
+catch (e) {
+	print("noaddr: ", e.message, "\n");
+}
+
+try {
+	netaddr.new({ address: "bogus" });
+	print("no error\n");
+}
+catch (e) {
+	print("badaddr: ", e.message, "\n");
+}
+
+try {
+	netaddr.v4({ family: 10, address: "2001:db8::1" });
+	print("no error\n");
+}
+catch (e) {
+	print("famv6: ", e.message, "\n");
+}
+
+try {
+	netaddr.new({ family: 1, address: "1.2.3.4" });
+	print("no error\n");
+}
+catch (e) {
+	print("badfam: ", e.message, "\n");
+}
+
+try {
+	netaddr.new({ family: 2, address: "1.2.3.4", interface: "lo" });
+	print("no error\n");
+}
+catch (e) {
+	print("ifacev4: ", e.message, "\n");
+}
+
+try {
+	netaddr.new({ family: 10, address: "fe80::1", interface: "nosuchif99" });
+	print("no error\n");
+}
+catch (e) {
+	print("badiface: ", e.message, "\n");
+}
+
+try {
+	netaddr.mac({ family: 2, address: "1.2.3.4" });
+	print("no error\n");
+}
+catch (e) {
+	print("macfam: ", e.message, "\n");
+}
+
+try {
+	netaddr.new({ family: 10, address: "2001:db8::1", interface: "lo" });
+	print("no error\n");
+}
+catch (e) {
+	print("nonll: ", e.message, "\n");
+}
+
+try {
+	netaddr.new({ address: "fe80::1", interface: -1 });
+	print("no error\n");
+}
+catch (e) {
+	print("negscope: ", e.message, "\n");
+}
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Testcase --
+import * as netaddr from 'netaddr';
+
+let a = netaddr.v6("fe80::221:63ff:fe75:aa17", 64, "lo");
+print(a, "\n");
+print(a.scope, ", ", a.scopeid, "\n");
+
+a = netaddr.v6("2001:db8::1", 128, "eth0");
+print(a, ", ", a.scope, "\n");
+
+a = netaddr.new("fe80::1234%lo");
+print(a.unscopename, "\n");
+print(a.unscoped(), "\n");
+
+a.scopeid = 1;
+print(a.scopeid, "\n");
+
+print(a.scoped(), "\n");
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+fe80::221:63ff:fe75:aa17%lo/64
+1, lo
+2001:db8::1, 0
+lo
+fe80::1234
+lo
+fe80::1234%lo
+-- End --
+
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+new: Invalid address
+IPv4: Invalid IPv4 address
+IPv6: Invalid IPv6 address
+MAC: Invalid MAC address
+mask: Invalid netmask
+maskstr: Invalid netmask
+arr5: Invalid address
+arr0: Invalid address
+v4mac: Invalid IPv4 address
+v6v4: Invalid IPv6 address
+big: Invalid IPv4 address
+neg: Invalid IPv4 address
+str: Invalid IPv4 address
+noaddr: Invalid address
+badaddr: Invalid address
+famv6: Invalid IPv4 address
+badfam: Invalid address
+ifacev4: Invalid address
+badiface: Invalid scope
+macfam: Invalid MAC address
+nonll: Invalid address
+negscope: Invalid scope
+-- End --

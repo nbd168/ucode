@@ -132,6 +132,7 @@ if(NOT UCODE_WASM)
   option(FS_SUPPORT "Filesystem plugin support" ON)
   option(IO_SUPPORT "IO plugin support" ON)
   option(MATH_SUPPORT "Math plugin support" ON)
+  option(NETADDR_SUPPORT "Network address plugin support" ON)
   option(FFI_SUPPORT "FFI module support" ${DEFAULT_FFI_SUPPORT})
   option(UBUS_SUPPORT "Ubus plugin support" ${DEFAULT_UBUS_SUPPORT})
   option(UCI_SUPPORT "UCI plugin support" ${DEFAULT_UCI_SUPPORT})
@@ -151,7 +152,7 @@ else()
   # uc_module_init renamed to uc_module_init_<name> so several can be
   # linked into one executable. Server-side socket APIs (bind/listen/
   # accept) are compiled in but not supported by emscripten.
-  set(UCODE_WASM_MODULES "io;math;struct;fs;zlib;resolv;socket;digest" CACHE STRING "Modules built into ucode-modules.a")
+  set(UCODE_WASM_MODULES "io;math;struct;fs;zlib;resolv;socket;digest;netaddr" CACHE STRING "Modules built into ucode-modules.a")
 endif()
 
 if(UCODE_WASM)
@@ -526,6 +527,13 @@ if(NOT UCODE_WASM)
 
     target_link_options(ffi_lib PRIVATE ${UCODE_MODULE_LINK_OPTIONS})
     target_link_libraries(ffi_lib ${LIBFFI_LINK_LIBRARIES})
+  endif()
+
+  if(NETADDR_SUPPORT)
+    set(LIBRARIES ${LIBRARIES} netaddr_lib)
+    add_library(netaddr_lib MODULE lib/netaddr.c)
+    set_target_properties(netaddr_lib PROPERTIES OUTPUT_NAME netaddr PREFIX "")
+    target_link_options(netaddr_lib PRIVATE ${UCODE_MODULE_LINK_OPTIONS})
   endif()
 endif() # UCODE_WASM
 

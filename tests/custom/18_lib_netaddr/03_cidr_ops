@@ -1,0 +1,169 @@
+Arithmetic (add/sub), comparison (lower/higher/equal/contains),
+predicate methods and byte-level access on netaddr.range instances.
+
+-- Testcase --
+import * as netaddr from 'netaddr';
+
+let a = netaddr.new("192.168.1.1/24");
+print(a.add(1), "\n");
+print(a.add(253), "\n");
+print(a.sub(1), "\n");
+print(a.sub(2), "\n");
+
+a = netaddr.new("255.255.255.255/32");
+print(a.add(1), "\n");
+
+a = netaddr.new("0.0.0.0/0");
+print(a.sub(1), "\n");
+
+a = netaddr.new("2001:db8::1/64");
+print(a.add(1), "\n");
+print(a.sub(1), "\n");
+
+a = netaddr.new("fe80::1%lo");
+print(a.add(1), "\n");
+print(a.sub(1), "\n");
+
+a = netaddr.new("00:11:22:33:44:55");
+print(a.add(1), "\n");
+print(a.sub(1), "\n");
+
+let b = netaddr.new("192.168.1.2");
+print(netaddr.new("192.168.1.1/24").contains(b), "\n");
+print(netaddr.new("192.168.1.1/24").contains(netaddr.new("192.168.2.1")), "\n");
+print(netaddr.new("192.168.1.1/24").contains(netaddr.new("10.0.0.1")), "\n");
+print(netaddr.new("2001:db8::/32").contains(netaddr.new("2001:db8:1::1")), "\n");
+print(netaddr.new("2001:db8::/32").contains(netaddr.new("2001:db9::1")), "\n");
+
+let c = netaddr.new("10.0.0.1");
+print(netaddr.new("192.168.1.1").lower(c), "\n");
+print(netaddr.new("192.168.1.1").higher(c), "\n");
+print(netaddr.new("192.168.1.1").equal(netaddr.new("192.168.1.1/24")), "\n");
+print(netaddr.new("192.168.1.1").equal(netaddr.new("192.168.1.2")), "\n");
+print(netaddr.new("1.2.3.4").lower(netaddr.new("2001:db8::1")), "\n");
+print(netaddr.new("2001:db8::1").higher(netaddr.new("1.2.3.4")), "\n");
+
+print(netaddr.new("10.0.0.1").is4(), "\n");
+print(netaddr.new("10.0.0.1").is4rfc1918(), "\n");
+print(netaddr.new("192.168.1.1").is4rfc1918(), "\n");
+print(netaddr.new("172.16.0.1").is4rfc1918(), "\n");
+print(netaddr.new("172.32.0.1").is4rfc1918(), "\n");
+print(netaddr.new("169.254.1.1").is4linklocal(), "\n");
+print(netaddr.new("10.0.0.1").is4linklocal(), "\n");
+print(netaddr.new("2001:db8::1").is6(), "\n");
+print(netaddr.new("2001:db8::1").is4(), "\n");
+print(netaddr.new("fe80::1").is6linklocal(), "\n");
+print(netaddr.new("fe80::1%lo").is6linklocal(), "\n");
+print(netaddr.new("2001:db8::1").is6linklocal(), "\n");
+print(netaddr.new("::ffff:1.2.3.4").is6mapped4(), "\n");
+print(netaddr.new("ffff::1.2.3.4").is6mapped4(), "\n");
+print(netaddr.new("00:11:22:33:44:55").ismac(), "\n");
+print(netaddr.new("00:11:22:33:44:55").ismaclocal(), "\n");
+print(netaddr.new("02:11:22:33:44:55").ismaclocal(), "\n");
+print(netaddr.new("01:00:5e:00:00:01").ismacmcast(), "\n");
+print(netaddr.new("01:80:c2:00:00:01").ismacmcast(), "\n");
+print(netaddr.new("02:11:22:33:44:55").ismacmcast(), "\n");
+print(netaddr.new("00:11:22:33:44:55").ismacmcast(), "\n");
+
+a = netaddr.new("192.168.1.1");
+print(a[0], a[1], a[2], a[3], "\n");
+print(a[-1], a[-4], "\n");
+a[3] = 2;
+print(a.string(), "\n");
+a[0] = 10;
+print(a.string(), "\n");
+
+a = netaddr.new("2001:db8::1");
+print(a[0], a[1], a[12], a[15], "\n");
+a[15] = 2;
+print(a.string(), "\n");
+
+a = netaddr.new("00:11:22:33:44:55");
+print(a[0], a[1], a[5], "\n");
+a[5] = 0xee;
+print(a.string(), "\n");
+
+a = netaddr.new("10.0.0.1/8");
+print(a.prefix(), "\n");
+print(a.prefix(24), "\n");
+print(a.string(), "\n");
+print(a.prefix("255.255.255.0"), "\n");
+print(a.string(), "\n");
+
+a = netaddr.new("2001:db8::1");
+print(a.prefix(64), "\n");
+print(a.string(), "\n");
+
+a = netaddr.new("192.168.1.1");
+print(a.netmask, "\n");
+a = netaddr.new("192.168.1.1/24");
+print(a.netmask, "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+192.168.1.2/24
+192.168.1.254/24
+192.168.1.0/24
+192.168.0.255/24
+255.255.255.255
+0.0.0.0/0
+2001:db8::2/64
+2001:db8::/64
+fe80::2%lo
+fe80::%lo
+00:11:22:33:44:56
+00:11:22:33:44:54
+true
+false
+false
+true
+false
+false
+true
+true
+false
+true
+true
+true
+true
+true
+true
+false
+true
+false
+true
+false
+true
+true
+false
+true
+false
+true
+false
+true
+true
+true
+false
+false
+19216811
+1192
+192.168.1.2
+10.168.1.2
+32101
+2001:db8::2
+01785
+00:11:22:33:44:EE
+8
+24
+10.0.0.1/24
+24
+10.0.0.1/24
+64
+2001:db8::1/64
+255.255.255.255
+255.255.255.0
+-- End --
