@@ -591,7 +591,12 @@ bool ucv_is_truish(uc_value_t *);
  * a reference to it, or NULL if the store failed. Setting a non-index property
  * on an array is guaranteed to fail (arrays have no own-key storage); in
  * strict mode it raises a type error instead of being silently dropped,
- * unless the array has a __set__ metamethod which handles the store. */
+ * unless the array has a __set__ metamethod which handles the store.
+ * ucv_key_delete() returns whether the key was removed; for values without
+ * own-key storage (arrays, resources) a __delete__ metamethod is the only way
+ * to handle a key, and a value which has neither the storage nor the metamethod
+ * raises a reference error, as does deleting from a value which can carry no
+ * prototype at all. */
 uc_value_t *ucv_key_get(uc_vm_t *, uc_value_t *, uc_value_t *);
 uc_value_t *ucv_key_set(uc_vm_t *, uc_value_t *, uc_value_t *, uc_value_t *);
 bool ucv_key_delete(uc_vm_t *, uc_value_t *, uc_value_t *);

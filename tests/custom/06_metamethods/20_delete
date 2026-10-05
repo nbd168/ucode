@@ -83,3 +83,107 @@ A delegated delete re-dispatches the target's own metamethods.
 true false
 true [ "x", "missing" ]
 -- End --
+
+Arrays take part in `__delete__` for non-index keys, just like they do for
+`__get__` and `__set__`: since an array has no own-key storage to remove the
+key from, the metamethod is the only way to handle such a key.
+
+-- Testcase --
+{%
+	let store = { x: 1, y: 2 };
+	let log = [];
+
+	let a = proto([1, 2], {
+		__set__(key, val) { store[key] = val; },
+		__get__(key) { return store[key]; },
+		__delete__(key) {
+			push(log, key);
+			return delete store[key];
+		}
+	});
+
+	a.x = 3;
+
+	print(a.x, " ", delete a.x, " ", delete a.ghost, " ", delete a.z, "\n");
+	print(store, " ", log, "\n");
+%}
+-- End --
+
+-- Expect stdout --
+3 true false false
+{ "y": 2 } [ "x", "ghost", "z" ]
+-- End --
+
+A `__delete__` which is an object delegates the delete of an array key to that
+object as well.
+
+-- Testcase --
+{%
+	let target = { k: 1 };
+	let a = proto([], { __delete__: target });
+
+	print(delete a.k, " ", delete a.j, " ", target.k === null, "\n");
+%}
+-- End --
+
+-- Expect stdout --
+true false true
+-- End --
+
+Array elements are positional and not deletable, so a key which is an array
+index - in range or not - is refused without consulting the metamethod, just
+like on the read and write paths. Only keys which are no indices reach the
+metamethod.
+
+-- Testcase --
+{%
+	let a = proto([1, 2], {
+		__delete__(key) {
+			print("intercepted ", key, "\n");
+			return true;
+		}
+	});
+
+	let refused = [];
+
+	for (let k in [0, "1", -1, -9]) {
+		try {
+			delete a[k];
+			push(refused, "accepted " + k);
+		}
+		catch (e) {
+			push(refused, "refused " + k);
+		}
+	}
+
+	print(refused, "\n");
+	print(delete a[1.5], " ", delete a.name, " ", length(a), "\n");
+%}
+-- End --
+
+-- Expect stdout --
+[ "refused 0", "refused 1", "refused -1", "refused -9" ]
+intercepted 1.5
+intercepted name
+true true 2
+-- End --
+
+Without a `__delete__` in effect there is nothing which could remove the key,
+so the delete is refused with a reference error, as it is for any other value
+kind which cannot carry a metamethod.
+
+-- Testcase --
+{%
+	let a = [1, 2];
+
+	try { delete a.x; } catch (e) { print(e, "\n"); }
+	try { delete a[0]; } catch (e) { print(e, "\n"); }
+	try { delete a.name; } catch (e) { print(e, "\n"); }
+%}
+-- End --
+
+-- Expect stdout --
+left-hand side expression is not an object
+left-hand side expression is not an object
+left-hand side expression is not an object
+-- End --
