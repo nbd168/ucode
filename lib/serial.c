@@ -1,3 +1,36 @@
+/**
+ * # Serial Port Access
+ *
+ * The `serial` module provides raw access to the termios terminal API and
+ * the serial port modem control lines.
+ *
+ * Functions can be individually imported and directly accessed using the
+ * {@link https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/import#named_import named import}
+ * syntax:
+ *
+ *   ```
+ *   import { attr, B115200 } from 'serial';
+ *
+ *   let fd = io.open('/dev/ttyS0', io.O_RDWR);
+ *   print(attr(fd));
+ *   ```
+ *
+ * Alternatively, the module namespace can be imported
+ * using a wildcard import statement:
+ *
+ *   ```
+ *   import * as serial from 'serial';
+ *
+ *   let fd = io.open('/dev/ttyS0', io.O_RDWR);
+ *   print(serial.attr(fd));
+ *   ```
+ *
+ * Additionally, the serial module namespace may also be imported by invoking
+ * the `ucode` interpreter with the `-lserial` switch.
+ *
+ * @module serial
+ */
+
 #define _DEFAULT_SOURCE
 
 #include <errno.h>
@@ -50,6 +83,16 @@ get_fd(uc_vm_t *vm, uc_value_t *val)
 	return (int)n;
 }
 
+/**
+ * Query error information.
+ *
+ * Returns a string containing a description of the last occurred error or
+ * `null` if there is no error information.
+ *
+ * @function module:serial#error
+ *
+ * @returns {?string}
+ */
 static uc_value_t *
 uc_serial_error(uc_vm_t *vm, size_t nargs)
 {
@@ -63,6 +106,18 @@ uc_serial_error(uc_vm_t *vm, size_t nargs)
 	return ucv_string_new(strerror(last_error));
 }
 
+/**
+ * Check whether the file descriptor refers to a terminal.
+ *
+ * @function module:serial#isatty
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @returns {?boolean}
+ * Returns `true` if the file descriptor refers to a terminal device,
+ * `false` otherwise, or `null` if an error occurred.
+ */
 static uc_value_t *
 uc_serial_isatty(uc_vm_t *vm, size_t nargs)
 {
@@ -74,6 +129,24 @@ uc_serial_isatty(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(isatty(fd) == 1);
 }
 
+/**
+ * Get terminal attributes.
+ *
+ * Retrieves the current termios attributes for the file descriptor.
+ *
+ * Returns an object containing the `iflag`, `oflag`, `cflag` and `lflag`
+ * flag values, the `ispeed` and `ospeed` baud rates, and a `cc` array of
+ * control character settings.
+ *
+ * Returns `null` if an error occurred or if the descriptor is not a terminal.
+ *
+ * @function module:serial#attr
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @returns {?object}
+ */
 static uc_value_t *
 uc_serial_attr(uc_vm_t *vm, size_t nargs)
 {
@@ -108,6 +181,38 @@ uc_serial_attr(uc_vm_t *vm, size_t nargs)
 	return rv;
 }
 
+/**
+ * Set terminal attributes.
+ *
+ * Updates the termios attributes for the file descriptor. The given object
+ * may contain any of the following properties:
+ *
+ *  - `iflag`: input flags
+ *  - `oflag`: output flags
+ *  - `cflag`: control flags
+ *  - `lflag`: local flags
+ *  - `ispeed`: input baud rate
+ *  - `ospeed`: output baud rate
+ *  - `cc`: array of control character settings
+ *
+ * Only the provided properties are modified, all other attributes are left
+ * unchanged.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#setattr
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {object} attrs
+ * The terminal attributes to set.
+ *
+ * @param {number} [when=0]
+ * When to apply the changes (`TCSANOW`, `TCSADRAIN` or `TCSAFLUSH`).
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_setattr(uc_vm_t *vm, size_t nargs)
 {
@@ -166,6 +271,27 @@ uc_serial_setattr(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Set the terminal baud rate.
+ *
+ * Sets both the input and output baud rate of the file descriptor to the
+ * given speed.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#setspeed
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} speed
+ * The baud rate to set, e.g. `B115200`.
+ *
+ * @param {number} [when=0]
+ * When to apply the changes (`TCSANOW`, `TCSADRAIN` or `TCSAFLUSH`).
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_setspeed(uc_vm_t *vm, size_t nargs)
 {
@@ -199,6 +325,24 @@ uc_serial_setspeed(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Put the terminal into raw mode.
+ *
+ * Disables input and output processing, canonical mode, signal generation
+ * and echo, following the behaviour of `cfmakeraw()`.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#setraw
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} [when=0]
+ * When to apply the changes (`TCSANOW`, `TCSADRAIN` or `TCSAFLUSH`).
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_setraw(uc_vm_t *vm, size_t nargs)
 {
@@ -224,6 +368,36 @@ uc_serial_setraw(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Configure the terminal read blocking behaviour.
+ *
+ * Sets the `VMIN` and `VTIME` control character settings which determine
+ * how reads from the terminal block:
+ *
+ *  - `vmin = 0`, `vtime = 0`: non-blocking reads
+ *  - `vmin = 0`, `vtime > 0`: reads time out after `vtime` tenths of a second
+ *  - `vmin > 0`, `vtime = 0`: reads block until at least `vmin` bytes arrive
+ *  - `vmin > 0`, `vtime > 0`: reads block until `vmin` bytes arrive or the
+ *    inter-byte `vtime` timeout expires
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#setblocking
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} vmin
+ * Minimum number of bytes to read before a read operation returns.
+ *
+ * @param {number} vtime
+ * Read timeout in tenths of a second.
+ *
+ * @param {number} [when=0]
+ * When to apply the changes (`TCSANOW`, `TCSADRAIN` or `TCSAFLUSH`).
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_setblocking(uc_vm_t *vm, size_t nargs)
 {
@@ -255,6 +429,21 @@ uc_serial_setblocking(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Get the serial port modem control line status.
+ *
+ * Returns a bitmask of the current modem control line states, using the
+ * `TIOCM_*` constants to test individual lines.
+ *
+ * Returns `null` if an error occurred.
+ *
+ * @function module:serial#mget
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @returns {?number}
+ */
 static uc_value_t *
 uc_serial_mget(uc_vm_t *vm, size_t nargs)
 {
@@ -271,6 +460,23 @@ uc_serial_mget(uc_vm_t *vm, size_t nargs)
 	return ucv_int64_new(bits);
 }
 
+/**
+ * Set the serial port modem control line states.
+ *
+ * Replaces the full set of modem control line states with the given bitmask.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#mset
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} bits
+ * The modem control line states to set, as a bitmask of `TIOCM_*` constants.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_mset(uc_vm_t *vm, size_t nargs)
 {
@@ -315,12 +521,48 @@ serial_modem_change(uc_vm_t *vm, size_t nargs, unsigned long req)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Set individual serial port modem control lines.
+ *
+ * Sets the modem control lines selected by the given bitmask, leaving all
+ * other lines unchanged.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#mbis
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} bits
+ * The modem control lines to set, as a bitmask of `TIOCM_*` constants.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_mbis(uc_vm_t *vm, size_t nargs)
 {
 	return serial_modem_change(vm, nargs, TIOCMBIS);
 }
 
+/**
+ * Clear individual serial port modem control lines.
+ *
+ * Clears the modem control lines selected by the given bitmask, leaving all
+ * other lines unchanged.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#mbic
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} bits
+ * The modem control lines to clear, as a bitmask of `TIOCM_*` constants.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_mbic(uc_vm_t *vm, size_t nargs)
 {
@@ -344,18 +586,66 @@ serial_modem_line(uc_vm_t *vm, size_t nargs, int bit)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Assert or deassert the DTR (Data Terminal Ready) modem control line.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#dtr
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {boolean} on
+ * Whether to assert (`true`) or deassert (`false`) the line.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_dtr(uc_vm_t *vm, size_t nargs)
 {
 	return serial_modem_line(vm, nargs, TIOCM_DTR);
 }
 
+/**
+ * Assert or deassert the RTS (Request To Send) modem control line.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#rts
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {boolean} on
+ * Whether to assert (`true`) or deassert (`false`) the line.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_rts(uc_vm_t *vm, size_t nargs)
 {
 	return serial_modem_line(vm, nargs, TIOCM_RTS);
 }
 
+/**
+ * Send a break signal on the serial line.
+ *
+ * If the terminal is in canonical mode, the break is sent after the current
+ * input line has been processed, otherwise it is sent immediately.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#sendbreak
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} [duration=0]
+ * The break duration in seconds, or `0` to send a standard length break.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_sendbreak(uc_vm_t *vm, size_t nargs)
 {
@@ -375,6 +665,21 @@ uc_serial_sendbreak(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Wait for pending output to be written.
+ *
+ * Blocks until all output written to the file descriptor has been
+ * transmitted.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#drain
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_drain(uc_vm_t *vm, size_t nargs)
 {
@@ -389,6 +694,22 @@ uc_serial_drain(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Flush the terminal input and/or output queues.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#flush
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {number} [queue=TCIOFLUSH]
+ * The queue(s) to flush: `TCIFLUSH` for input, `TCOFLUSH` for output, or
+ * `TCIOFLUSH` for both.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_flush(uc_vm_t *vm, size_t nargs)
 {
@@ -424,12 +745,38 @@ serial_queue_count(uc_vm_t *vm, size_t nargs, unsigned long req)
 	return ucv_int64_new(n);
 }
 
+/**
+ * Get the number of bytes waiting in the input queue.
+ *
+ * Returns the number of bytes available for reading without blocking, or
+ * `null` if an error occurred.
+ *
+ * @function module:serial#input_waiting
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @returns {?number}
+ */
 static uc_value_t *
 uc_serial_input_waiting(uc_vm_t *vm, size_t nargs)
 {
 	return serial_queue_count(vm, nargs, TIOCINQ);
 }
 
+/**
+ * Get the number of bytes waiting in the output queue.
+ *
+ * Returns the number of bytes pending transmission, or `null` if an error
+ * occurred.
+ *
+ * @function module:serial#output_waiting
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @returns {?number}
+ */
 static uc_value_t *
 uc_serial_output_waiting(uc_vm_t *vm, size_t nargs)
 {
@@ -437,6 +784,24 @@ uc_serial_output_waiting(uc_vm_t *vm, size_t nargs)
 }
 
 #ifdef __linux__
+/**
+ * Get the serial port configuration.
+ *
+ * Retrieves the serial port specific configuration (setserial style) for
+ * the file descriptor.
+ *
+ * Returns an object containing the `type`, `line`, `port`, `irq`, `flags`,
+ * `xmit_fifo_size`, `custom_divisor`, `baud_base`, `close_delay`,
+ * `closing_wait`, `hub6`, `io_type`, `port_high` and `iomem_reg_shift`
+ * properties, or `null` if an error occurred.
+ *
+ * @function module:serial#getinfo
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @returns {?object}
+ */
 static uc_value_t *
 uc_serial_getinfo(uc_vm_t *vm, size_t nargs)
 {
@@ -472,6 +837,41 @@ uc_serial_getinfo(uc_vm_t *vm, size_t nargs)
 	return rv;
 }
 
+/**
+ * Set the serial port configuration.
+ *
+ * Updates the serial port specific configuration (setserial style) for the
+ * file descriptor. The given object may contain any of the following
+ * properties:
+ *
+ *  - `type`: port type
+ *  - `port`: I/O port address
+ *  - `irq`: interrupt line
+ *  - `flags`: port flags
+ *  - `xmit_fifo_size`: transmit FIFO size
+ *  - `custom_divisor`: custom baud rate divisor
+ *  - `baud_base`: base clock frequency
+ *  - `close_delay`: delay before closing the port
+ *  - `closing_wait`: wait time when closing the port
+ *  - `hub6`: HUB6 port selection
+ *  - `port_high`: high I/O port address
+ *  - `iomem_reg_shift`: I/O memory register shift
+ *
+ * Only the provided properties are modified, all other settings are left
+ * unchanged.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#setinfo
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {object} opts
+ * The serial port configuration options to set.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_setinfo(uc_vm_t *vm, size_t nargs)
 {
@@ -533,6 +933,25 @@ uc_serial_setinfo(uc_vm_t *vm, size_t nargs)
 	return ucv_boolean_new(true);
 }
 
+/**
+ * Enable or disable the low latency mode.
+ *
+ * Toggles the `ASYNC_LOW_LATENCY` flag in the serial port configuration,
+ * which reduces the latency of the serial port at the cost of increased
+ * CPU usage.
+ *
+ * Returns `true` on success, or `null` if an error occurred.
+ *
+ * @function module:serial#lowlatency
+ *
+ * @param {number|object} fd
+ * The file descriptor, or an object with a `fileno()` method.
+ *
+ * @param {boolean} on
+ * Whether to enable (`true`) or disable (`false`) the low latency mode.
+ *
+ * @returns {?boolean}
+ */
 static uc_value_t *
 uc_serial_lowlatency(uc_vm_t *vm, size_t nargs)
 {
@@ -592,6 +1011,20 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 
 	#define ADD_CONST(x) ucv_object_add(scope, #x, ucv_int64_new(x))
 
+	/**
+	 * @typedef
+	 * @name Apply Modes
+	 * @description
+	 * The `TCS*` constants are used as the optional *when* argument of
+	 * {@link module:serial#setattr|setattr()},
+	 * {@link module:serial#setspeed|setspeed()},
+	 * {@link module:serial#setraw|setraw()} and
+	 * {@link module:serial#setblocking|setblocking()} to control when the
+	 * attribute changes take effect.
+	 * @property {number} TCSANOW - Apply the changes immediately.
+	 * @property {number} TCSADRAIN - Apply the changes after all pending output has been transmitted (default).
+	 * @property {number} TCSAFLUSH - Apply the changes after all pending output has been transmitted, discarding any unread input.
+	 */
 #ifdef TCSANOW
 	ADD_CONST(TCSANOW);
 #endif
@@ -602,6 +1035,16 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(TCSAFLUSH);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Flush Queues
+	 * @description
+	 * The `TC*FLUSH` constants are used as the optional *queue* argument of
+	 * {@link module:serial#flush|flush()} to select the queue(s) to flush.
+	 * @property {number} TCIFLUSH - Flush data received but not read.
+	 * @property {number} TCOFLUSH - Flush data written but not yet transmitted.
+	 * @property {number} TCIOFLUSH - Flush both received and written data (default).
+	 */
 #ifdef TCIFLUSH
 	ADD_CONST(TCIFLUSH);
 #endif
@@ -612,6 +1055,28 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(TCIOFLUSH);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Control Flags
+	 * @description
+	 * The `cflag` constants select the control mode of the port and are used
+	 * with the `cflag` property of {@link module:serial#setattr|setattr()}.
+	 * @property {number} CSIZE - Mask for the character size bits.
+	 * @property {number} CS5 - Use 5 data bits per character.
+	 * @property {number} CS6 - Use 6 data bits per character.
+	 * @property {number} CS7 - Use 7 data bits per character.
+	 * @property {number} CS8 - Use 8 data bits per character.
+	 * @property {number} CSTOPB - Use two stop bits (one if clear).
+	 * @property {number} CREAD - Enable the receiver.
+	 * @property {number} PARENB - Enable parity generation and detection.
+	 * @property {number} PARODD - Use odd parity (even if clear).
+	 * @property {number} HUPCL - Hang up (drop the carrier) when the last file descriptor is closed.
+	 * @property {number} CLOCAL - Ignore the modem status lines.
+	 * @property {number} CRTSCTS - Enable in-band (hardware) flow control.
+	 * @property {number} CMSPAR - Use "stick" (space/mark) parity.
+	 * @property {number} CBAUD - Mask for the baud rate bits.
+	 * @property {number} CBAUDEX - Extended baud rate bits.
+	 */
 #ifdef CSIZE
 	ADD_CONST(CSIZE);
 #endif
@@ -658,6 +1123,28 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(CBAUDEX);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Input Flags
+	 * @description
+	 * The `iflag` constants control input processing and are used with the
+	 * `iflag` property of {@link module:serial#setattr|setattr()}.
+	 * @property {number} IGNBRK - Ignore the break condition.
+	 * @property {number} BRKINT - If IGNBRK is not set, a break causes an interrupt signal.
+	 * @property {number} IGNPAR - Ignore characters with parity errors.
+	 * @property {number} PARMRK - Mark parity errors with a three-byte sequence.
+	 * @property {number} INPCK - Enable input parity checking.
+	 * @property {number} ISTRIP - Strip the eighth bit of input characters.
+	 * @property {number} INLCR - Map NL to CR on input.
+	 * @property {number} IGNCR - Ignore CR on input.
+	 * @property {number} ICRNL - Map CR to NL on input.
+	 * @property {number} IUCLC - Map uppercase to lowercase on input.
+	 * @property {number} IXON - Enable XON/XOFF flow control output.
+	 * @property {number} IXANY - Allow any character to restart output.
+	 * @property {number} IXOFF - Enable XON/XOFF flow control input.
+	 * @property {number} IMAXBEL - Ring the bell when the input queue is full.
+	 * @property {number} IUTF8 - Input characters are UTF-8 encoded.
+	 */
 #ifdef IGNBRK
 	ADD_CONST(IGNBRK);
 #endif
@@ -704,6 +1191,21 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(IUTF8);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Output Flags
+	 * @description
+	 * The `oflag` constants control output processing and are used with the
+	 * `oflag` property of {@link module:serial#setattr|setattr()}.
+	 * @property {number} OPOST - Enable implementation-defined output processing.
+	 * @property {number} OLCUC - Map lowercase to uppercase on output.
+	 * @property {number} ONLCR - Map NL to CR-NL on output.
+	 * @property {number} OCRNL - Map CR to NL on output.
+	 * @property {number} ONOCR - Translate CR to NUL in the first column.
+	 * @property {number} ONLRET - Do not transmit CR.
+	 * @property {number} OFILL - Use fill characters for timing.
+	 * @property {number} OFDEL - Use DEL characters for fill (NUL if clear).
+	 */
 #ifdef OPOST
 	ADD_CONST(OPOST);
 #endif
@@ -729,6 +1231,24 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(OFDEL);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Local Flags
+	 * @description
+	 * The `lflag` constants control local (non-modem) behaviour and are used
+	 * with the `lflag` property of {@link module:serial#setattr|setattr()}.
+	 * @property {number} ISIG - Enable signal generation (INTR, QUIT, SUSP).
+	 * @property {number} ICANON - Enable canonical mode (line-buffered input).
+	 * @property {number} ECHO - Enable echoing of input characters.
+	 * @property {number} ECHOE - Erase the last character on ERASE.
+	 * @property {number} ECHOK - Ring the bell on the kill character.
+	 * @property {number} ECHONL - Echo NL even if ECHO is not set.
+	 * @property {number} ECHOCTL - Echo control characters in hat notation.
+	 * @property {number} ECHOKE - Erase a killed line.
+	 * @property {number} NOFLSH - Disable flushing on signal.
+	 * @property {number} TOSTOP - Generate SIGTTOU for background writes.
+	 * @property {number} IEXTEN - Enable implementation-defined input extensions.
+	 */
 #ifdef ISIG
 	ADD_CONST(ISIG);
 #endif
@@ -763,6 +1283,33 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(IEXTEN);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Control Character Indices
+	 * @description
+	 * The `V*` constants are indices into the `cc` array returned by
+	 * {@link module:serial#attr|attr()} and accepted by
+	 * {@link module:serial#setattr|setattr()}. `NCCS` is the number of
+	 * control characters in the array.
+	 * @property {number} VINTR - Interrupt character (sends SIGINT).
+	 * @property {number} VQUIT - Quit character (sends SIGQUIT).
+	 * @property {number} VERASE - Erase character (erases the last character).
+	 * @property {number} VKILL - Kill character (erases the current line).
+	 * @property {number} VEOF - End-of-file character.
+	 * @property {number} VTIME - Read timeout in tenths of a second.
+	 * @property {number} VMIN - Minimum number of bytes for a read.
+	 * @property {number} VSWTC - Switch character (XON/XOFF switching).
+	 * @property {number} VSTART - Restart character (XON).
+	 * @property {number} VSTOP - Stop character (XOFF).
+	 * @property {number} VSUSP - Suspend character (sends SIGTSTP).
+	 * @property {number} VEOL - End-of-line character (first).
+	 * @property {number} VREPRINT - Reprint character (reprints the line).
+	 * @property {number} VDISCARD - Discard mode toggle character.
+	 * @property {number} VWERASE - Word-erase character.
+	 * @property {number} VLNEXT - Literal next character (disables special characters).
+	 * @property {number} VEOL2 - End-of-line character (second).
+	 * @property {number} NCCS - Number of control characters.
+	 */
 #ifdef VINTR
 	ADD_CONST(VINTR);
 #endif
@@ -818,6 +1365,46 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(NCCS);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Baud Rates
+	 * @description
+	 * The `B*` constants select the port baud rate and are used with the
+	 * `ispeed`/`ospeed` properties of {@link module:serial#setattr|setattr()}
+	 * or as the *speed* argument of
+	 * {@link module:serial#setspeed|setspeed()}.
+	 * @property {number} B0 - Hang up (no carrier).
+	 * @property {number} B50 - 50 baud.
+	 * @property {number} B75 - 75 baud.
+	 * @property {number} B110 - 110 baud.
+	 * @property {number} B134 - 134.5 baud.
+	 * @property {number} B150 - 150 baud.
+	 * @property {number} B200 - 200 baud.
+	 * @property {number} B300 - 300 baud.
+	 * @property {number} B600 - 600 baud.
+	 * @property {number} B1200 - 1200 baud.
+	 * @property {number} B1800 - 1800 baud.
+	 * @property {number} B2400 - 2400 baud.
+	 * @property {number} B4800 - 4800 baud.
+	 * @property {number} B9600 - 9600 baud.
+	 * @property {number} B19200 - 19200 baud.
+	 * @property {number} B38400 - 38400 baud.
+	 * @property {number} B57600 - 57600 baud.
+	 * @property {number} B115200 - 115200 baud.
+	 * @property {number} B230400 - 230400 baud.
+	 * @property {number} B460800 - 460800 baud.
+	 * @property {number} B500000 - 500000 baud.
+	 * @property {number} B576000 - 576000 baud.
+	 * @property {number} B921600 - 921600 baud.
+	 * @property {number} B1000000 - 1000000 baud.
+	 * @property {number} B1152000 - 1152000 baud.
+	 * @property {number} B1500000 - 1500000 baud.
+	 * @property {number} B2000000 - 2000000 baud.
+	 * @property {number} B2500000 - 2500000 baud.
+	 * @property {number} B3000000 - 3000000 baud.
+	 * @property {number} B3500000 - 3500000 baud.
+	 * @property {number} B4000000 - 4000000 baud.
+	 */
 #ifdef B0
 	ADD_CONST(B0);
 #endif
@@ -912,6 +1499,27 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(B4000000);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Modem Control Line Bits
+	 * @description
+	 * The `TIOCM_*` constants identify the serial port modem control lines
+	 * and are used with {@link module:serial#mget|mget()},
+	 * {@link module:serial#mset|mset()},
+	 * {@link module:serial#mbis|mbis()} and
+	 * {@link module:serial#mbic|mbic()}.
+	 * @property {number} TIOCM_LE - Loopback output.
+	 * @property {number} TIOCM_DTR - Data Terminal Ready.
+	 * @property {number} TIOCM_RTS - Request To Send.
+	 * @property {number} TIOCM_ST - Secondary transmit (TX2).
+	 * @property {number} TIOCM_SR - Secondary receive (RX2).
+	 * @property {number} TIOCM_CTS - Clear To Send.
+	 * @property {number} TIOCM_CAR - Carrier Detect.
+	 * @property {number} TIOCM_CD - Carrier Detect (alias).
+	 * @property {number} TIOCM_RNG - Ring Indicator.
+	 * @property {number} TIOCM_RI - Ring Indicator (alias).
+	 * @property {number} TIOCM_DSR - Data Set Ready.
+	 */
 #ifdef TIOCM_LE
 	ADD_CONST(TIOCM_LE);
 #endif
@@ -947,6 +1555,30 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 #endif
 
 #ifdef __linux__
+	/**
+	 * @typedef
+	 * @name Serial Port Flags
+	 * @description
+	 * The `ASYNC_*` constants are flags of the `flags` property returned by
+	 * {@link module:serial#getinfo|getinfo()} and accepted by
+	 * {@link module:serial#setinfo|setinfo()}.
+	 * @property {number} ASYNC_HUP_NOTIFY - Send SIGHUP when the port is closed.
+	 * @property {number} ASYNC_FOURPORT - Enable four-port mode.
+	 * @property {number} ASYNC_SAK - Enable special "SAK" character handling.
+	 * @property {number} ASYNC_SPD_HI - High speed serial support (> 115200).
+	 * @property {number} ASYNC_SPD_VHI - Very high speed serial support (> 230400).
+	 * @property {number} ASYNC_SPD_SHI - Shigh speed serial support (1.5-3 Mbit).
+	 * @property {number} ASYNC_SPD_CUST - Custom divisor baud rate.
+	 * @property {number} ASYNC_SPD_WARP - Warp speed serial (bit-banged).
+	 * @property {number} ASYNC_SPD_MASK - Mask for the speed selection bits.
+	 * @property {number} ASYNC_SKIP_TEST - Skip the UART presence test.
+	 * @property {number} ASYNC_AUTO_IRQ - Auto-detect the IRQ line.
+	 * @property {number} ASYNC_CALLOUT_NOHUP - Do not send SIGHUP on close.
+	 * @property {number} ASYNC_LOW_LATENCY - Enable low latency mode.
+	 * @property {number} ASYNC_BUGGY_UART - Workaround for buggy UARTs.
+	 * @property {number} ASYNC_CLOSING_WAIT_INF - Infinite closing wait.
+	 * @property {number} ASYNC_CLOSING_WAIT_NONE - No closing wait.
+	 */
 #ifdef ASYNC_HUP_NOTIFY
 	ADD_CONST(ASYNC_HUP_NOTIFY);
 #endif
@@ -996,6 +1628,22 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	ADD_CONST(ASYNC_CLOSING_WAIT_NONE);
 #endif
 
+	/**
+	 * @typedef
+	 * @name Serial Port Types
+	 * @description
+	 * The `PORT_*` constants identify the serial port type of the `type`
+	 * property returned by {@link module:serial#getinfo|getinfo()} and
+	 * accepted by {@link module:serial#setinfo|setinfo()}.
+	 * @property {number} PORT_UNKNOWN - Unknown port type.
+	 * @property {number} PORT_8250 - Generic 8250 UART.
+	 * @property {number} PORT_16450 - 16450 UART.
+	 * @property {number} PORT_16550 - 16550 UART.
+	 * @property {number} PORT_16550A - 16550A UART.
+	 * @property {number} PORT_16650 - 16650 UART.
+	 * @property {number} PORT_16650V2 - 16650V2 UART.
+	 * @property {number} PORT_16750 - 16750 UART.
+	 */
 #ifdef PORT_UNKNOWN
 	ADD_CONST(PORT_UNKNOWN);
 #endif
