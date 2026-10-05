@@ -19,7 +19,7 @@
 'use strict';
 
 function isCommentStart(source, offset) {
-	if (source[offset++] != '\n')
+	if (offset > 0 && source[offset++] != '\n')
 		return false;
 
 	while (source[offset] == ' ' || source[offset] == '\t')
@@ -61,6 +61,9 @@ exports.handlers = {
 	let source = '';
 
 	for (chunk of chunks) {
+		if (chunk.start === chunk.end)
+			continue;
+
 		if (chunk.comment)
 			source += e.source.substring(chunk.start, chunk.end);
 		else
