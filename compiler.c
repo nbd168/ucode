@@ -2990,7 +2990,7 @@ uc_compiler_compile_for_count(uc_compiler_t *compiler, bool local, uc_token_t *p
 	uc_compiler_parse_consume(compiler, TK_RPAREN);
 
 	/* if we have a condition, jump back to it, else continue to the loop body */
-	if (cond_off)
+	if (test_off)
 		uc_compiler_emit_jmp_dest(compiler, 0, cond_off);
 
 	/* back patch skip address */

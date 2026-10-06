@@ -1,0 +1,38 @@
+A counting for loop without an initializer that opened a function body
+placed its condition at bytecode offset 0, which the compiler mistook
+for an absent condition. The loop then never jumped back to the test
+and kept running after the condition had turned false.
+
+-- Testcase --
+{%
+	function count_down(n) {
+		for (; n > 0; n--) {
+			if (n < -2)
+				return "runaway";
+
+			print(n, "\n");
+		}
+
+		return "done";
+	}
+
+	function walk(n) {
+		for (; n > 1; n = int(n / 2))
+			if (n == 0)
+				return "runaway";
+
+		return n;
+	}
+
+	print(count_down(3), "\n");
+	print(walk(8), "\n");
+%}
+-- End --
+
+-- Expect stdout --
+3
+2
+1
+done
+1
+-- End --
