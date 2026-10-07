@@ -5715,11 +5715,11 @@ uc_gc(uc_vm_t *vm, size_t nargs)
  *
  * @property {boolean} lstrip_blocks
  * Whether to strip whitespace preceding template directives.
- * See {@link tutorial-02-syntax.html#whitespace-handling|Whitespace handling}.
+ * See {@link https://ucode-lang.org/manual/#h-16-templates-5|whitespace handling in the manual}.
  *
  * @property {boolean} trim_blocks
  * Whether to trim trailing newlines following template directives.
- * See {@link tutorial-02-syntax.html#whitespace-handling|Whitespace handling}.
+ * See {@link https://ucode-lang.org/manual/#h-16-templates-5|whitespace handling in the manual}.
  *
  * @property {boolean} strict_declarations
  * Whether to compile the code in strict mode (`true`) or not (`false`).
