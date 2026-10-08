@@ -1179,7 +1179,7 @@ uc_ubus_call_user_cb(uc_ubus_deferred_t *defer, int ret, uc_value_t *reply)
 		uc_vm_stack_push(vm, ucv_int64_new(ret));
 		uc_vm_stack_push(vm, ucv_get(reply));
 
-		if (uc_vm_call(vm, true, 2) == EXCEPTION_NONE)
+		if (uc_ubus_vm_call(vm, true, 2))
 			ucv_put(uc_vm_stack_pop(vm));
 	}
 
