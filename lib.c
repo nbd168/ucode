@@ -2424,8 +2424,8 @@ uc_trim_common(uc_vm_t *vm, size_t nargs, bool start, bool end)
 {
 	uc_value_t *str = uc_fn_arg(0);
 	uc_value_t *chr = uc_fn_arg(1);
-	const char *p, *c;
-	size_t len;
+	const char *o, *p, *c;
+	size_t olen, len;
 
 	if (ucv_type(str) != UC_STRING ||
 		(chr != NULL && ucv_type(chr) != UC_STRING))
@@ -2434,8 +2434,8 @@ uc_trim_common(uc_vm_t *vm, size_t nargs, bool start, bool end)
 	c = ucv_string_get(chr);
 	c = c ? c : " \t\r\n";
 
-	p = ucv_string_get(str);
-	len = ucv_string_length(str);
+	o = p = ucv_string_get(str);
+	olen = len = ucv_string_length(str);
 
 	if (start) {
 		while (*p) {
@@ -2455,6 +2455,9 @@ uc_trim_common(uc_vm_t *vm, size_t nargs, bool start, bool end)
 			len--;
 		}
 	}
+
+	if (o == p && olen == len)
+		return ucv_get(str);
 
 	return ucv_string_new_length(p, len);
 }
