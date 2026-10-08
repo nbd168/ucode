@@ -2541,7 +2541,12 @@ grow_buffer(uc_vm_t *vm, void **buf, size_t *bufsz, size_t length)
 					return false;
 				}
 
-				new_size += ((new_size >> 1) + 7u) & ~7u;
+				/* Use +8u (not +7u) so the growth step is always >= 8 bytes:
+				 * with +7u the expression ((new_size >> 1) + 7u) & ~7u
+				 * evaluates to 0 for new_size <= 15, stalling the loop
+				 * forever when *bufsz is 0 (e.g. a buffer that was
+				 * allocated with a zero-byte grow). */
+				new_size += ((new_size >> 1) + 8u) & ~7u;
 			}
 		}
 
