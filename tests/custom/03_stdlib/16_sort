@@ -118,3 +118,283 @@ In [anonymous function](), line 2, byte 37:
 
 
 -- End --
+
+
+Growing an array from its comparator must not invalidate the storage
+being sorted. The array becomes mutable again after the exception.
+
+-- Testcase --
+{%
+	let expected = [];
+
+	for (let i = 0; i < 64; i++)
+		push(expected, i);
+
+	let input = reverse(expected);
+	let calls = 0;
+
+	try {
+		sort(input, (a, b) => {
+			calls++;
+
+			for (let i = 0; i < 1000; i++)
+				push(input, i);
+
+			return a - b;
+		});
+		die("Mutation was not rejected");
+	}
+	catch (e) {
+		assert(e.type == "Type error" && e.message == "array value is immutable");
+	}
+
+	assert(calls == 1 && length(input) == 64);
+	assert(join(",", sort(input)) == join(",", expected));
+	push(input, 64);
+	assert(pop(input) == 64 && length(input) == 64);
+	print("Array growth rejected; mutability restored\n");
+%}
+-- End --
+
+-- Expect stdout --
+Array growth rejected; mutability restored
+-- End --
+
+
+Other array mutations, including recursive sorting, are rejected too.
+
+-- Testcase --
+{%
+	for (let mutate in [
+		(a) => pop(a),
+		(a) => shift(a),
+		(a) => unshift(a, 0),
+		(a) => splice(a, 0, 1),
+		(a) => splice(a, 0, 0, 4, 5),
+		(a) => { a[1000] = 4; },
+		(a) => { a[0] = 4; },
+		(a) => { delete a[0]; },
+		(a) => sort(a)
+	]) {
+		let input = [ 3, 2, 1 ];
+		let calls = 0;
+
+		try {
+			sort(input, (a, b) => {
+				calls++;
+				mutate(input);
+				return a - b;
+			});
+			die("Mutation was not rejected");
+		}
+		catch (e) {
+			assert(e.type == "Type error" && e.message == "array value is immutable");
+		}
+
+		assert(calls == 1 && join(",", sort(input)) == "1,2,3");
+		push(input, 4);
+		assert(pop(input) == 4);
+	}
+
+	print("Array mutations and recursive sorting rejected\n");
+%}
+-- End --
+
+-- Expect stdout --
+Array mutations and recursive sorting rejected
+-- End --
+
+
+Growing or deleting object entries from a comparator must not invalidate
+the hash table entry pointers saved by the sort operation.
+
+-- Testcase --
+{%
+	for (let mutate in [
+		(o) => { for (let i = 0; i < 100; i++) o[`key${i}`] = i; },
+		(o) => { delete o.a; },
+		(o) => { o.a = 4; },
+		(o) => sort(o)
+	]) {
+		let input = { c: 3, b: 2, a: 1 };
+		let calls = 0;
+
+		try {
+			sort(input, (k1, k2) => {
+				calls++;
+				mutate(input);
+				return k1 < k2 ? -1 : k1 > k2 ? 1 : 0;
+			});
+			die("Mutation was not rejected");
+		}
+		catch (e) {
+			assert(e.type == "Type error" && e.message == "object value is immutable");
+		}
+
+		assert(calls == 1 && length(input) == 3);
+		assert(input.a == 1 && input.b == 2 && input.c == 3);
+		assert(join(",", keys(sort(input))) == "a,b,c");
+		input.d = 4;
+		assert(delete input.d);
+		assert(length(input) == 3);
+	}
+
+	print("Object mutations and recursive sorting rejected\n");
+%}
+-- End --
+
+-- Expect stdout --
+Object mutations and recursive sorting rejected
+-- End --
+
+
+A comparator may handle a rejected mutation and continue sorting. It may
+also sort and modify other collections, and modify nested values.
+
+-- Testcase --
+{%
+	let input = [ { n: 3 }, { n: 2 }, { n: 1 } ];
+	let other = [ 2, 1 ];
+	let object = { b: 2, a: 1 };
+	let calls = 0;
+
+	assert(sort(input, (a, b) => {
+		calls++;
+		a.seen = true;
+		b.seen = true;
+		push(other, 0);
+		sort(other);
+		object.c = 3;
+		sort(object);
+
+		try {
+			push(input, null);
+			die("Mutation was not rejected");
+		}
+		catch (e) {
+			assert(e.type == "Type error" && e.message == "array value is immutable");
+		}
+
+		return a.n - b.n;
+	}) == input);
+
+	assert(calls > 0 && join(",", map(input, (v) => v.n)) == "1,2,3");
+	assert(input[0].seen && input[1].seen && input[2].seen);
+	push(input, { n: 4 });
+	assert(pop(input).n == 4);
+	assert(join(",", keys(object)) == "a,b,c");
+	print("Handled mutation errors and independent sorts work\n");
+%}
+-- End --
+
+-- Expect stdout --
+Handled mutation errors and independent sorts work
+-- End --
+
+
+The default comparator must reject mutations from tostring() methods and
+propagate their exceptions before invoking any further conversions.
+
+-- Testcase --
+{%
+	let input;
+	let calls = 0;
+	let item = proto({}, { tostring: function() {
+		calls++;
+		push(input, 4);
+		return "item";
+	} });
+	input = [ item, item, item ];
+
+	try {
+		sort(input);
+		die("Mutation was not rejected");
+	}
+	catch (e) {
+		assert(e.type == "Type error" && e.message == "array value is immutable");
+	}
+
+	assert(calls == 1 && length(input) == 3);
+	push(input, 4);
+	assert(pop(input) == 4);
+	print("String conversion mutation rejected; mutability restored\n");
+%}
+-- End --
+
+-- Expect stdout --
+String conversion mutation rejected; mutability restored
+-- End --
+
+
+An exception in either operand's conversion stops all later conversions.
+
+-- Testcase --
+{%
+	for (let fail_at in [ 1, 2 ]) {
+		let calls = 0;
+		let item = proto({}, { tostring: function() {
+			if (++calls == fail_at)
+				die("Sort conversion failed");
+
+			return "item";
+		} });
+		let input = [ item, item, item ];
+
+		try {
+			sort(input);
+			die("Conversion exception was not propagated");
+		}
+		catch (e) {
+			assert(e.message == "Sort conversion failed");
+		}
+
+		assert(calls == fail_at && length(input) == 3);
+		push(input, 4);
+		assert(pop(input) == 4);
+	}
+
+	print("String conversion exceptions stop subsequent callbacks\n");
+%}
+-- End --
+
+-- Expect stdout --
+String conversion exceptions stop subsequent callbacks
+-- End --
+
+
+Mutability is restored after successful sorting as well as comparator
+exceptions, without changing the identity or prototype of the input.
+
+-- Testcase --
+{%
+	let prototype = { marker: true };
+	let input = proto([ 3, 2, 1 ], prototype);
+	let object = proto({ c: 3, b: 2, a: 1 }, prototype);
+
+	assert(sort(input) == input && proto(input) == prototype);
+	assert(sort(object) == object && proto(object) == prototype);
+	push(input, 4);
+	object.d = 4;
+	assert(join(",", input) == "1,2,3,4");
+	assert(join(",", keys(object)) == "a,b,c,d");
+
+	for (let source in [ input, object ]) {
+		try {
+			sort(source, () => die("Sort comparator failed"));
+			die("Comparator exception was not propagated");
+		}
+		catch (e) {
+			assert(e.message == "Sort comparator failed");
+		}
+	}
+
+	assert(pop(input) == 4);
+	assert(delete object.d);
+	assert(proto(input) == prototype && proto(object) == prototype);
+	print("Mutability, identity and prototypes preserved\n");
+%}
+-- End --
+
+-- Expect stdout --
+Mutability, identity and prototypes preserved
+-- End --
