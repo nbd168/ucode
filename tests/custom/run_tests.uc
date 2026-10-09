@@ -8,6 +8,7 @@ let topdir = fs.realpath(`${testdir}/../..`);
 let line = '........................................';
 let ucode_bin = getenv('UCODE_BIN') || `${topdir}/build/ucode`;
 let ucode_lib = getenv('UCODE_LIB') || `${topdir}/build`;
+let platform = trim(fs.popen('uname -s', 'r').read('all'));
 
 function mkdir_p(path) {
 	let parts = split(rtrim(path, '/') || '/', /\/+/);
@@ -49,6 +50,9 @@ function parse_testcases(file, dir) {
 	for (let line = fp.read('line'); length(line); line = fp.read('line')) {
 		if (line == '-- Args --\n') {
 			section = [ 'args', [] ];
+		}
+		else if (line == '-- Platform --\n') {
+			section = [ 'platform', [] ];
 		}
 		else if (line == '-- Vars --\n') {
 			section = [ 'env', {} ];
@@ -95,6 +99,7 @@ function parse_testcases(file, dir) {
 		else if (section) {
 			switch (section[0]) {
 			case 'args':
+			case 'platform':
 				if ((m = trim(line)) != '')
 					push(section[1], ...split(m, /[ \t\r\n]+/));
 				break;
@@ -200,12 +205,17 @@ function run_test(file) {
 
 	let tmpdir = sprintf('/tmp/test.%d', getpid());
 	let testcases = parse_testcases(file, tmpdir);
-	let failed = 0;
+	let failed = 0, skipped = 0;
 
 	fs.mkdir(tmpdir);
 
 	try {
 		for (let i, testcase in testcases) {
+			if (testcase.platform && index(testcase.platform, platform) < 0) {
+				skipped++;
+				continue;
+			}
+
 			for (let path, data in testcase.files) {
 				mkdir_p(fs.dirname(path));
 				fs.writefile(path, data) ?? die(`Error writing testcase file "${path}": ${fs.error()}\n`);
@@ -220,7 +230,9 @@ function run_test(file) {
 
 	system(['rm', '-r', tmpdir]);
 
-	if (failed == 0)
+	if (failed == 0 && skipped > 0)
+		printf('OK (%d/%d skipped)\n', skipped, length(testcases));
+	else if (failed == 0)
 		print('OK\n');
 	else
 		printf('%s %s FAILED (%d/%d)\n', name, substr(line, length(name)), failed, length(testcases));
