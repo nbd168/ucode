@@ -1890,18 +1890,18 @@ uc_uloop_interval_clear(uc_uloop_interval_t *interval)
  *
  * This method rearms the interval timer with the specified interval value,
  * allowing it to trigger repeatedly after the specified amount of time. If no
- * interval value is provided or if the provided value is negative, the interval
- * remains disabled until rearmed with a positive interval value.
+ * interval value or `null` is provided, the interval is disarmed and keeps
+ * its callback, so that a later call can rearm it.
  *
  * @function module:uloop.interval#set
  *
- * @param {number} [interval=-1]
+ * @param {?number} [interval]
  * Optional. The interval value in milliseconds specifying when the interval
- * triggers again. Defaults to -1, which disables the interval until rearmed
- * with a positive interval value.
+ * triggers again. Without a value, the interval is disarmed.
  *
  * @returns {?boolean}
- * Returns `true` on success, `null` on error, such as an invalid interval argument.
+ * Returns `true` on success, `null` on error, such as a zero or negative
+ * interval.
  *
  * @example
  * // Rearm the uloop interval with a interval of 1000 milliseconds
@@ -1930,11 +1930,20 @@ uc_uloop_interval_set(uc_vm_t *vm, size_t nargs)
 	if (!interval)
 		err_return(EINVAL);
 
+	if (!timeout) {
+		uloop_interval_cancel(&interval->interval);
+
+		ok_return(ucv_boolean_new(true));
+	}
+
 	errno = 0;
-	t = timeout ? (int)ucv_int64_get(timeout) : -1;
+	t = (int)ucv_int64_get(timeout);
 
 	if (errno)
 		err_return(errno);
+
+	if (t <= 0)
+		err_return(EINVAL);
 
 	rv = uloop_interval_set(&interval->interval, t);
 
@@ -2051,7 +2060,8 @@ uc_uloop_interval_cb(struct uloop_interval *uintv)
  *
  * @param {number} [timeout=-1]
  * Optional. The interval duration in milliseconds. Defaults to -1, indicating
- * the interval is not initially armed.
+ * the interval is not initially armed. A zero or negative value also leaves
+ * the interval unarmed.
  *
  * @param {Function} callback
  * The callback function to be executed when the interval expires.
@@ -2088,7 +2098,7 @@ uc_uloop_interval(uc_vm_t *vm, size_t nargs)
 
 	interval = uc_uloop_alloc(vm, "uloop.interval", sizeof(*interval), callback);
 	interval->interval.cb = uc_uloop_interval_cb;
-	if (t >= 0)
+	if (t > 0)
 		uloop_interval_set(&interval->interval, t);
 
 	uc_uloop_cb_pin(&interval->cb);

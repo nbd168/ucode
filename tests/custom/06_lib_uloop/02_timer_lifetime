@@ -202,3 +202,71 @@ set(-1): true
 fired: 1
 alive: 0
 -- End --
+
+
+Calling set() on an interval without a value or with null disarms it and
+keeps its callback, so that it can be rearmed. A zero or negative interval
+is rejected by set() and leaves a new interval unarmed.
+
+-- Testcase --
+{%
+	import * as uloop from 'uloop';
+
+	if (!uloop.interval)
+		exit(77);
+
+	uloop.init();
+
+	function run(msecs) {
+		uloop.timer(msecs, () => uloop.end());
+		uloop.run();
+	}
+
+	let ticks = 0;
+	let interval = uloop.interval(5, () => ticks++);
+
+	run(30);
+	printf("armed: %s\n", ticks > 0);
+
+	printf("set(): %s, remaining: %d\n", interval.set(), interval.remaining());
+	ticks = 0;
+	run(30);
+	printf("ticks: %d\n", ticks);
+
+	printf("set(-1): %s, %s\n", interval.set(-1), uloop.error());
+	printf("set(0): %s, %s\n", interval.set(0), uloop.error());
+
+	interval.set(5);
+	run(30);
+	printf("rearmed: %s\n", ticks > 0);
+
+	printf("set(null): %s, remaining: %d\n", interval.set(null),
+		interval.remaining());
+	ticks = 0;
+	run(30);
+	printf("ticks: %d\n", ticks);
+
+	interval.cancel();
+
+	interval = uloop.interval(0, () => ticks++);
+	printf("interval(0): remaining: %d\n", interval.remaining());
+	run(30);
+	printf("ticks: %d\n", ticks);
+
+	interval.cancel();
+	uloop.done();
+%}
+-- End --
+
+-- Expect stdout --
+armed: true
+set(): true, remaining: -1
+ticks: 0
+set(-1): (null), Invalid argument
+set(0): (null), Invalid argument
+rearmed: true
+set(null): true, remaining: -1
+ticks: 0
+interval(0): remaining: -1
+ticks: 0
+-- End --
