@@ -2128,6 +2128,8 @@ uc_nl_convert_attr(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char *base
 }
 
 
+uc_declare_vector(uc_nl_msgs_t, struct nl_msg *);
+
 static struct {
 	struct nl_sock *sock;
 	struct nl_sock *evsock;
@@ -2135,6 +2137,8 @@ static struct {
 	struct uloop_fd evsock_fd;
 	struct nl_cb *evsock_cb;
 	struct uloop_timeout overrun_timer;
+	struct uloop_timeout pending_timer;
+	uc_nl_msgs_t pending;
 	int rcvbuf;
 } nl80211_conn;
 
@@ -2603,7 +2607,66 @@ cb_listener_event(struct nl_msg *msg, void *arg)
 	return NL_SKIP;
 }
 
-/* nl80211 sends every event with sequence 0 */
+static void
+uc_nl_pending_deliver(struct uloop_timeout *t)
+{
+	uc_nl_msgs_t *pending = &nl80211_conn.pending;
+	int rv = NL_SKIP;
+	size_t i = 0;
+
+	while (i < pending->count && rv != NL_STOP)
+		rv = cb_listener_event(pending->entries[i++], NULL);
+
+	for (size_t j = 0; j < i; j++)
+		nlmsg_free(pending->entries[j]);
+
+	pending->count -= i;
+
+	if (!pending->count) {
+		uc_vector_clear(pending);
+		return;
+	}
+
+	memmove(pending->entries, pending->entries + i,
+	        pending->count * sizeof(*pending->entries));
+	uloop_timeout_set(t, 0);
+}
+
+static void
+uc_nl_listener_defer(struct nl_msg *msg)
+{
+	struct nl_msg *copy;
+
+	if (!nl80211_conn.evsock_fd.registered || !listener_vm)
+		return;
+
+	copy = nlmsg_convert(nlmsg_hdr(msg));
+
+	if (!copy)
+		return;
+
+	uc_vector_push(&nl80211_conn.pending, copy);
+
+	nl80211_conn.pending_timer.cb = uc_nl_pending_deliver;
+	uloop_timeout_set(&nl80211_conn.pending_timer, 0);
+}
+
+/* events deferred by a request must reach the listeners first */
+static int
+cb_listener_dispatch(struct nl_msg *msg, void *arg)
+{
+	if (!nl80211_conn.pending.count)
+		return cb_listener_event(msg, arg);
+
+	uc_nl_listener_defer(msg);
+
+	return NL_SKIP;
+}
+
+/*
+ * nl80211 sends every event with sequence 0. A listener callback can
+ * issue requests itself, so it must not run inside a request.
+ */
 static int
 cb_evsock_msg(struct nl_msg *msg, void *arg)
 {
@@ -2614,7 +2677,7 @@ cb_evsock_msg(struct nl_msg *msg, void *arg)
 		return NL_OK;
 
 	if (hdr->nlmsg_seq == 0)
-		cb_listener_event(msg, NULL);
+		uc_nl_listener_defer(msg);
 
 	return NL_SKIP;
 }
@@ -2627,7 +2690,7 @@ cb_event(struct nl_msg *msg, void *arg)
 	struct waitfor_ctx *s = arg;
 	uc_value_t *o;
 
-	cb_listener_event(msg, arg);
+	cb_listener_dispatch(msg, arg);
 
 	if (gnlh->cmd > NL80211_CMD_MAX ||
 	    !(s->cmds[gnlh->cmd / 32] & (1 << (gnlh->cmd % 32))))
@@ -3160,7 +3223,7 @@ uc_nl_listener(uc_vm_t *vm, size_t nargs)
 
 		nl_cb_set(cb, NL_CB_SEQ_CHECK, NL_CB_CUSTOM, cb_seq, NULL);
 		nl_cb_set(cb, NL_CB_MSG_IN, NL_CB_CUSTOM, cb_evsock_msg, NULL);
-		nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_listener_event, NULL);
+		nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_listener_dispatch, NULL);
 		nl80211_conn.evsock_cb = cb;
 	}
 
