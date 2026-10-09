@@ -1706,11 +1706,11 @@ typedef struct {
 } sort_ctx_t;
 
 static int
-default_cmp(uc_value_t *v1, uc_value_t *v2, uc_vm_t *vm)
+default_cmp(uc_value_t *v1, uc_value_t *v2, sort_ctx_t *ctx)
 {
-	char *s1, *s2;
-	bool f1, f2;
-	int res;
+	char *s1 = NULL, *s2 = NULL;
+	bool f1 = false, f2 = false;
+	int res = 0;
 
 	/* when both operands are numeric then compare numerically */
 	if ((ucv_type(v1) == UC_INTEGER || ucv_type(v1) == UC_DOUBLE) &&
@@ -1721,10 +1721,20 @@ default_cmp(uc_value_t *v1, uc_value_t *v2, uc_vm_t *vm)
 	}
 
 	/* otherwise convert both operands to strings and compare lexically */
-	s1 = uc_cast_string(vm, &v1, &f1);
-	s2 = uc_cast_string(vm, &v2, &f2);
+	s1 = uc_cast_string(ctx->vm, &v1, &f1);
+
+	if (ctx->vm->exception.type != EXCEPTION_NONE)
+		goto out;
+
+	s2 = uc_cast_string(ctx->vm, &v2, &f2);
+
+	if (ctx->vm->exception.type != EXCEPTION_NONE)
+		goto out;
 
 	res = strcmp(s1, s2);
+
+out:
+	ctx->ex = (ctx->vm->exception.type != EXCEPTION_NONE);
 
 	if (f1) free(s1);
 	if (f2) free(s2);
@@ -1739,11 +1749,11 @@ array_sort_fn(uc_value_t *v1, uc_value_t *v2, void *ud)
 	sort_ctx_t *ctx = ud;
 	int res;
 
-	if (!ctx->fn)
-		return default_cmp(v1, v2, ctx->vm);
-
 	if (ctx->ex)
 		return 0;
+
+	if (!ctx->fn)
+		return default_cmp(v1, v2, ctx);
 
 	uc_vm_ctx_push(ctx->vm);
 	uc_vm_stack_push(ctx->vm, ucv_get(ctx->fn));
@@ -1774,11 +1784,11 @@ object_sort_fn(const char *k1, uc_value_t *v1, const char *k2, uc_value_t *v2,
 	sort_ctx_t *ctx = ud;
 	int res;
 
-	if (!ctx->fn)
-		return strcmp(k1, k2);
-
 	if (ctx->ex)
 		return 0;
+
+	if (!ctx->fn)
+		return strcmp(k1, k2);
 
 	uc_vm_ctx_push(ctx->vm);
 	uc_vm_stack_push(ctx->vm, ucv_get(ctx->fn));
@@ -1808,6 +1818,8 @@ object_sort_fn(const char *k1, uc_value_t *v1, const char *k2, uc_value_t *v2,
  * If no sort function is provided, a default ascending sort order is applied.
  *
  * The input array is sorted in-place, no copy is made.
+ * The input is temporarily immutable while sorting. Attempts to modify it
+ * from the comparator or a string conversion method raise an exception.
  *
  * The custom sort function is repeatedly called until the entire array is
  * sorted. It will receive two values as arguments and should return a value

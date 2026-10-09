@@ -786,7 +786,7 @@ ucv_array_pop(uc_value_t *uv)
 	uc_array_t *array = ucv_as_array(uv);
 	uc_value_t *item;
 
-	if (ucv_type(uv) != UC_ARRAY || array->count == 0)
+	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv) || array->count == 0)
 		return NULL;
 
 	item = ucv_get(array->entries[array->count - 1]);
@@ -815,7 +815,7 @@ ucv_array_shift(uc_value_t *uv)
 	uc_array_t *array = ucv_as_array(uv);
 	uc_value_t *item;
 
-	if (ucv_type(uv) != UC_ARRAY || array->count == 0)
+	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv) || array->count == 0)
 		return NULL;
 
 	item = ucv_get(array->entries[0]);
@@ -831,7 +831,7 @@ ucv_array_unshift(uc_value_t *uv, uc_value_t *item)
 	uc_array_t *array = ucv_as_array(uv);
 	size_t i;
 
-	if (ucv_type(uv) != UC_ARRAY)
+	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv))
 		return NULL;
 
 	uc_vector_extend(array, 1);
@@ -860,10 +860,13 @@ ucv_array_sort_r(uc_value_t *uv,
 	array_sort_ctx_t ctx = { .cmp = cmp, .ud = ud };
 	uc_array_t *array = ucv_as_array(uv);
 
-	if (ucv_type(uv) != UC_ARRAY || array->count <= 1)
+	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv) || array->count <= 1)
 		return;
 
+	/* Comparators must not invalidate the storage used by qsort. */
+	ucv_set_constant(uv, true);
 	uc_vector_sort(array, ucv_array_sort_r_cb, &ctx);
+	ucv_set_constant(uv, false);
 }
 
 void
@@ -871,10 +874,12 @@ ucv_array_sort(uc_value_t *uv, int (*cmp)(const void *, const void *))
 {
 	uc_array_t *array = ucv_as_array(uv);
 
-	if (ucv_type(uv) != UC_ARRAY || array->count <= 1)
+	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv) || array->count <= 1)
 		return;
 
+	ucv_set_constant(uv, true);
 	qsort(array->entries, array->count, sizeof(array->entries[0]), cmp);
+	ucv_set_constant(uv, false);
 }
 
 bool
@@ -883,7 +888,7 @@ ucv_array_delete(uc_value_t *uv, size_t offset, size_t count)
 	uc_array_t *array = ucv_as_array(uv);
 	size_t i;
 
-	if (ucv_type(uv) != UC_ARRAY || array->count == 0)
+	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv) || array->count == 0)
 		return false;
 
 	if (offset >= array->count)
@@ -913,7 +918,7 @@ ucv_array_set(uc_value_t *uv, size_t index, uc_value_t *item)
 {
 	uc_array_t *array = ucv_as_array(uv);
 
-	if (ucv_type(uv) != UC_ARRAY)
+	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv))
 		return false;
 
 	if (index >= array->count) {
@@ -1100,7 +1105,8 @@ ucv_object_sort_common(uc_value_t *uv, object_sort_ctx_t *ctx)
 		size_t count;
 	} keys = { 0 };
 
-	if (ucv_type(uv) != UC_OBJECT || lh_table_length(object->table) <= 1)
+	if (ucv_type(uv) != UC_OBJECT || ucv_is_constant(uv) ||
+	    lh_table_length(object->table) <= 1)
 		return;
 
 	for (t = object->table, e = t->head; e; e = e->next)
@@ -1109,6 +1115,8 @@ ucv_object_sort_common(uc_value_t *uv, object_sort_ctx_t *ctx)
 	if (!keys.entries)
 		return;
 
+	/* Keep the saved hash table entry pointers valid until relinking. */
+	ucv_set_constant(uv, true);
 	uc_vector_sort(&keys,
 		ctx->cmpr ? ucv_object_sort_r_cb : ucv_object_sort_cb, ctx);
 
@@ -1128,6 +1136,7 @@ ucv_object_sort_common(uc_value_t *uv, object_sort_ctx_t *ctx)
 	}
 
 	uc_vector_clear(&keys);
+	ucv_set_constant(uv, false);
 }
 
 void
