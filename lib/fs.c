@@ -633,7 +633,7 @@ uc_fs_popen(uc_vm_t *vm, size_t nargs)
 					path = "/usr/local/bin:/usr/bin:/bin";
 
 				for (; *path; path = (*end ? end + 1 : end)) {
-					end = strchrnul(path, ':');
+					end = path + strcspn(path, ":");
 
 					if (end == path)
 						continue;

@@ -52,7 +52,7 @@
 
 # define environ (*_NSGetEnviron())
 
-__hidden int pipe2(int[2], int);
+int pipe2(int[2], int);
 __hidden int sigtimedwait(const sigset_t *, siginfo_t *, const struct timespec *);
 
 static inline int
