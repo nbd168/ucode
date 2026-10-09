@@ -93,6 +93,16 @@ limitations under the License.
 #define RTNL_CMDS_BITMAP_SIZE	DIV_ROUND_UP(__RTM_MAX, 32)
 #define RTNL_GRPS_BITMAP_SIZE	DIV_ROUND_UP(__RTNLGRP_MAX, 32)
 
+#define RTNL_EVSOCK_RCVBUF_INIT	(1024 * 1024)
+#define RTNL_EVSOCK_RCVBUF_MAX	(8 * 1024 * 1024)
+
+enum {
+	LISTENER_SLOT_RES,
+	LISTENER_SLOT_CB,
+	LISTENER_SLOT_OVERRUN_CB,
+	LISTENER_SLOTS
+};
+
 /* Can't use net/if.h for declarations as it clashes with linux/if.h
  * on certain musl versions.
  * Ref: https://www.openwall.com/lists/musl/2017/04/16/1 */
@@ -3381,6 +3391,7 @@ static struct {
 	struct nl_sock *evsock;
 	struct uloop_fd evsock_fd;
 	uint32_t groups[RTNL_GRPS_BITMAP_SIZE];
+	int rcvbuf;
 } nl_conn;
 
 typedef enum {
@@ -3452,6 +3463,19 @@ static int
 cb_done(struct nl_msg *msg, void *arg)
 {
 	request_state_t *s = arg;
+
+	s->state = STATE_REPLIED;
+
+	return NL_STOP;
+}
+
+static int
+cb_done_ack(struct nl_msg *msg, void *arg)
+{
+	request_state_t *s = arg;
+
+	if (s->state == STATE_UNREPLIED)
+		s->res = ucv_boolean_new(true);
 
 	s->state = STATE_REPLIED;
 
@@ -3542,7 +3566,13 @@ static const struct {
  * @param {number} flags - The netlink flags for the request
  * @param {*} payload - The payload data for the request
  *
- * @returns {?*} - The response data or null on error
+ * @returns {?(Object|Object[]|boolean)} - The response data, true for a
+ *                                         successful acknowledgement without
+ *                                         data, false when the kernel refuses
+ *                                         the request or the reply cannot be
+ *                                         received, or null for a dump
+ *                                         without entries and when the
+ *                                         request cannot be sent
  *
  * @example
  * // Send a route request
@@ -3641,7 +3671,7 @@ uc_nl_request(uc_vm_t *vm, size_t nargs)
 
 	nl_cb_set(cb, NL_CB_VALID, NL_CB_CUSTOM, cb_reply, &st);
 	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, cb_done, &st);
-	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done, &st);
+	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, cb_done_ack, &st);
 	nl_cb_err(cb, NL_CB_CUSTOM, cb_error, &st);
 
 	nl_send_auto_complete(sock, msg);
@@ -3668,9 +3698,12 @@ uc_nl_request(uc_vm_t *vm, size_t nargs)
 		return ucv_boolean_new(true);
 
 	case STATE_ERROR:
+		ucv_put(st.res);
+
 		return ucv_boolean_new(false);
 
 	default:
+		ucv_put(st.res);
 		set_error(NLE_FAILURE, "Interrupted reply");
 
 		return ucv_boolean_new(false);
@@ -3776,9 +3809,9 @@ cb_listener_event(struct nl_msg *msg, void *arg)
 	if (!nl_conn.evsock_fd.registered || !vm)
 		return NL_SKIP;
 
-	for (size_t i = 0; i < ucv_array_length(listener_registry); i += 2) {
-		uc_value_t *this = ucv_array_get(listener_registry, i);
-		uc_value_t *func = ucv_array_get(listener_registry, i + 1);
+	for (size_t i = 0; i < ucv_array_length(listener_registry); i += LISTENER_SLOTS) {
+		uc_value_t *this = ucv_array_get(listener_registry, i + LISTENER_SLOT_RES);
+		uc_value_t *func = ucv_array_get(listener_registry, i + LISTENER_SLOT_CB);
 		uc_nl_listener_t *l;
 		uc_value_t *o;
 
@@ -3818,16 +3851,99 @@ cb_listener_event(struct nl_msg *msg, void *arg)
 }
 
 static void
+uc_nl_listener_overrun_notify(void)
+{
+	uc_vm_t *vm = listener_vm;
+
+	for (size_t i = 0; i < ucv_array_length(listener_registry); i += LISTENER_SLOTS) {
+		uc_value_t *this = ucv_array_get(listener_registry, i + LISTENER_SLOT_RES);
+		uc_value_t *func = ucv_array_get(listener_registry, i + LISTENER_SLOT_OVERRUN_CB);
+
+		if (!ucv_resource_data(this, "rtnl.listener") || !ucv_is_callable(func))
+			continue;
+
+		uc_vm_stack_push(vm, ucv_get(this));
+		uc_vm_stack_push(vm, ucv_get(func));
+
+		if (uc_vm_call(vm, true, 0) != EXCEPTION_NONE) {
+			uloop_end();
+			set_error(NLE_FAILURE, "Runtime exception in callback");
+
+			return;
+		}
+
+		ucv_put(uc_vm_stack_pop(vm));
+	}
+}
+
+static void
+uc_nl_evsock_rcvbuf_set(int size)
+{
+	int fd = nl_socket_get_fd(nl_conn.evsock);
+
+	/* SO_RCVBUFFORCE exceeds net.core.rmem_max but needs CAP_NET_ADMIN */
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUFFORCE, &size, sizeof(size)) < 0)
+		setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof(size));
+
+	nl_conn.rcvbuf = size;
+}
+
+static void
+uc_nl_evsock_overrun(void)
+{
+	if (nl_conn.rcvbuf < RTNL_EVSOCK_RCVBUF_MAX)
+		uc_nl_evsock_rcvbuf_set(nl_conn.rcvbuf * 2);
+
+	if (uloop_cancelled)
+		return;
+
+	uc_nl_listener_overrun_notify();
+}
+
+/* any error the kernel sets on a multicast socket means a lost event */
+static bool
+uc_nl_evsock_error_take(struct uloop_fd *fd)
+{
+	socklen_t len = sizeof(int);
+	int err = 0;
+
+	if (!fd->error)
+		return false;
+
+	fd->error = false;
+
+	if (getsockopt(fd->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0)
+		return false;
+
+	return err != 0;
+}
+
+/*
+ * The kernel sets ENOBUFS once per congestion and ends the congestion only
+ * when the queue is empty, so drain the queue fully.
+ */
+static void
 uc_nl_listener_cb(struct uloop_fd *fd, unsigned int events)
 {
+	bool overrun = uc_nl_evsock_error_take(fd);
+	int err;
+
 	while (true) {
 		errno = 0;
 
-		nl_recvmsgs_default(nl_conn.evsock);
+		err = nl_recvmsgs_default(nl_conn.evsock);
 
-		if (errno != 0)
+		if (err == -NLE_NOMEM && errno == ENOBUFS) {
+			overrun = true;
+			continue;
+		}
+
+		if (err < 0 || errno != 0)
 			break;
 	}
+
+	if (overrun)
+		uc_nl_evsock_overrun();
 }
 
 static void
@@ -3857,15 +3973,15 @@ uc_nl_evsock_init(void)
 	if (nl_connect(sock, NETLINK_ROUTE))
 		goto free;
 
+	nl_conn.evsock = sock;
+
 	fd->fd = nl_socket_get_fd(sock);
 	fd->cb = uc_nl_listener_cb;
-	uloop_fd_add(fd, ULOOP_READ);
+	uloop_fd_add(fd, ULOOP_READ | ULOOP_ERROR_CB);
 
-	nl_socket_set_buffer_size(sock, 1024 * 1024, 0);
+	uc_nl_evsock_rcvbuf_set(RTNL_EVSOCK_RCVBUF_INIT);
 	nl_socket_disable_seq_check(sock);
 	nl_socket_modify_cb(sock, NL_CB_VALID, NL_CB_CUSTOM, cb_listener_event, NULL);
-
-	nl_conn.evsock = sock;
 
 	return true;
 
@@ -3943,8 +4059,8 @@ uc_nl_listener(uc_vm_t *vm, size_t nargs)
 		uc_nl_add_group(RTNLGRP_LINK);
 	}
 
-	for (i = 0; i < ucv_array_length(listener_registry); i += 2) {
-		if (!ucv_array_get(listener_registry, i))
+	for (i = 0; i < ucv_array_length(listener_registry); i += LISTENER_SLOTS) {
+		if (!ucv_array_get(listener_registry, i + LISTENER_SLOT_RES))
 			break;
 	}
 
@@ -3959,8 +4075,9 @@ uc_nl_listener(uc_vm_t *vm, size_t nargs)
 
 	rv = uc_resource_new(listener_type, l);
 
-	ucv_array_set(listener_registry, i, ucv_get(rv));
-	ucv_array_set(listener_registry, i + 1, ucv_get(cb_func));
+	ucv_array_set(listener_registry, i + LISTENER_SLOT_RES, ucv_get(rv));
+	ucv_array_set(listener_registry, i + LISTENER_SLOT_CB, ucv_get(cb_func));
+	ucv_array_set(listener_registry, i + LISTENER_SLOT_OVERRUN_CB, NULL);
 
 	listener_vm = vm;
 
@@ -3975,8 +4092,9 @@ uc_nl_listener_free(void *arg)
 	if (!l)
 		return;
 
-	ucv_array_set(listener_registry, l->index, NULL);
-	ucv_array_set(listener_registry, l->index + 1, NULL);
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_RES, NULL);
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_CB, NULL);
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_OVERRUN_CB, NULL);
 	free(l);
 }
 
@@ -4009,6 +4127,63 @@ uc_nl_listener_set_commands(uc_vm_t *vm, size_t nargs)
 		uc_vm_raise_exception(vm, EXCEPTION_TYPE, "Invalid command ID");
 
 	return NULL;
+}
+
+/**
+ * Set the overrun handler of a netlink listener.
+ *
+ * The kernel drops event messages when the receive buffer of the event
+ * socket is full. The module then enlarges the buffer and calls the
+ * overrun handler of each listener without arguments.
+ *
+ * Events of every joined group can be lost, including deletions. The
+ * handler must dump each table that the script keeps state for. It must
+ * treat every entry of the dump as new or changed, and every cached entry
+ * that is missing from the dump as deleted.
+ *
+ * @function module:rtnl.listener#set_overrun_handler
+ *
+ * @param {?function} handler - The function to call after an overrun, or
+ * `null` to remove it
+ *
+ * @returns {?boolean} - true if successful, null if the listener is closed
+ *
+ * @example
+ * // Rebuild the link cache after lost events
+ * listener.set_overrun_handler(() => {
+ *     let dump = request(RTM_GETLINK, NLM_F_DUMP, {});
+ *     let seen = {};
+ *
+ *     if (dump === false)
+ *         return;
+ *
+ *     for (let link in dump ?? []) {
+ *         seen[link.ifname] = true;
+ *         links[link.ifname] = link;
+ *     }
+ *
+ *     for (let name in keys(links))
+ *         if (!seen[name])
+ *             delete links[name];
+ * });
+ */
+static uc_value_t *
+uc_nl_listener_set_overrun_handler(uc_vm_t *vm, size_t nargs)
+{
+	uc_nl_listener_t *l = uc_fn_thisval("rtnl.listener");
+	uc_value_t *handler = uc_fn_arg(0);
+
+	if (!l)
+		return NULL;
+
+	if (handler && !ucv_is_callable(handler)) {
+		uc_vm_raise_exception(vm, EXCEPTION_TYPE, "Invalid overrun handler");
+		return NULL;
+	}
+
+	ucv_array_set(listener_registry, l->index + LISTENER_SLOT_OVERRUN_CB, ucv_get(handler));
+
+	return ucv_boolean_new(true);
 }
 
 /**
@@ -4946,6 +5121,7 @@ static const uc_function_list_t global_fns[] = {
 
 static const uc_function_list_t listener_fns[] = {
 	{ "set_commands",	uc_nl_listener_set_commands },
+	{ "set_overrun_handler",	uc_nl_listener_set_overrun_handler },
 	{ "close",			uc_nl_listener_close },
 };
 
