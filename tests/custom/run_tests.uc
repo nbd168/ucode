@@ -167,6 +167,9 @@ function run_testcase(num, dir, testcase) {
 
 	let exitcode = proc.close();
 
+	if (exitcode == 77 && ecode != 77)
+		return null;
+
 	fout.seek(0);
 	ferr.seek(0);
 
@@ -221,7 +224,12 @@ function run_test(file) {
 				fs.writefile(path, data) ?? die(`Error writing testcase file "${path}": ${fs.error()}\n`);
 			}
 
-			failed += !run_testcase(i + 1, tmpdir, testcase);
+			let ok = run_testcase(i + 1, tmpdir, testcase);
+
+			if (ok == null)
+				skipped++;
+			else
+				failed += !ok;
 		}
 	}
 	catch (e) {
