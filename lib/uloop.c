@@ -971,8 +971,8 @@ get_fd(uc_vm_t *vm, uc_value_t *val)
  * This function creates a handle instance for monitoring events on a file
  * descriptor, file, or socket. It takes the file or socket handle, a callback
  * function to be invoked when the specified IO events occur, and bitwise OR-ed
- * flags of IO events (`ULOOP_READ`, `ULOOP_WRITE`) that the callback should be
- * invoked for.
+ * flags of IO events (`ULOOP_READ`, `ULOOP_WRITE`, `ULOOP_PRIORITY`) that the
+ * callback should be invoked for.
  *
  * Unless `ULOOP_ERROR_CB` is given, the event loop removes the descriptor on
  * an error or hangup and invokes the callback a last time. The handle is
@@ -987,9 +987,10 @@ get_fd(uc_vm_t *vm, uc_value_t *val)
  * The callback function to be invoked when the specified IO events occur.
  *
  * @param {number} events
- * Bitwise OR-ed flags of IO events (`ULOOP_READ`, `ULOOP_WRITE`) that the
- * callback should be invoked for. At least one IO event is required; mode
- * flags such as `ULOOP_ERROR_CB` alone are rejected.
+ * Bitwise OR-ed flags of IO events (`ULOOP_READ`, `ULOOP_WRITE`,
+ * `ULOOP_PRIORITY`) that the callback should be invoked for. At least one
+ * IO event is required; mode flags such as `ULOOP_ERROR_CB` alone are
+ * rejected.
  *
  * @returns {?module:uloop.handle}
  * Returns a handle instance for monitoring file descriptor events.
@@ -2602,12 +2603,18 @@ void uc_module_init(uc_vm_t *vm, uc_value_t *scope)
 	 * @property {number} ULOOP_BLOCKING - Do not make descriptor non-blocking.
 	 * @property {number} ULOOP_ERROR_CB - Deliver the error state to the
 	 * callback instead of removing the descriptor from the event loop.
+	 * @property {number} ULOOP_PRIORITY - Priority data is readable, e.g.
+	 * TCP urgent data (epoll only, requires a libubox with `ULOOP_PRIORITY`
+	 * support).
 	 */
 	ADD_CONST(ULOOP_READ);
 	ADD_CONST(ULOOP_WRITE);
 	ADD_CONST(ULOOP_EDGE_TRIGGER);
 	ADD_CONST(ULOOP_BLOCKING);
 	ADD_CONST(ULOOP_ERROR_CB);
+#ifdef ULOOP_PRIORITY
+	ADD_CONST(ULOOP_PRIORITY);
+#endif
 
 	uc_type_declare(vm, "uloop.timer", timer_fns, close_timer);
 	uc_type_declare(vm, "uloop.handle", handle_fns, close_handle);
