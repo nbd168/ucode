@@ -1422,15 +1422,72 @@ uc_uloop_pipe_send(uc_vm_t *vm, size_t nargs)
 	ok_return(uc_uloop_pipe_send_common(vm, msg, pipe->output));
 }
 
-static bool
-uc_uloop_pipe_receive_common(uc_vm_t *vm, int fd, uc_value_t **res, bool skip)
+typedef struct {
+	json_tokener *tok;
+	json_object *jso;
+	enum json_tokener_error err;
+} uc_uloop_pipe_parser_t;
+
+static void
+uc_uloop_pipe_parser_init(uc_uloop_pipe_parser_t *parser)
 {
-	enum json_tokener_error err = json_tokener_error_parse_eof;
-	json_tokener *tok = NULL;
-	json_object *jso = NULL;
+	parser->tok = xjs_new_tokener();
+	parser->jso = NULL;
+	parser->err = json_tokener_continue;
+}
+
+static void
+uc_uloop_pipe_parser_feed(uc_uloop_pipe_parser_t *parser, const char *buf,
+                          size_t len)
+{
+	if (!parser->tok || parser->err != json_tokener_continue)
+		return;
+
+	parser->jso = json_tokener_parse_ex(parser->tok, buf, len);
+	parser->err = json_tokener_get_error(parser->tok);
+}
+
+static void
+uc_uloop_pipe_parser_free(uc_uloop_pipe_parser_t *parser)
+{
+	if (parser->tok)
+		json_tokener_free(parser->tok);
+
+	json_object_put(parser->jso);
+	parser->tok = NULL;
+	parser->jso = NULL;
+}
+
+static bool
+uc_uloop_pipe_parser_finish(uc_vm_t *vm, uc_uloop_pipe_parser_t *parser,
+                            uc_value_t **res)
+{
+	bool rv;
+
+	*res = NULL;
+
+	if (!parser->tok)
+		return false;
+
+	uc_uloop_pipe_parser_feed(parser, "\0", 1);
+	rv = (parser->err == json_tokener_success);
+
+	if (rv)
+		*res = ucv_from_json(vm, parser->jso);
+
+	uc_uloop_pipe_parser_free(parser);
+
+	return rv;
+}
+
+static bool
+uc_uloop_pipe_receive_common(uc_vm_t *vm, int fd, uc_value_t **res)
+{
+	uc_uloop_pipe_parser_t parser;
 	char buf[1024];
 	ssize_t rlen;
 	size_t len;
+	int err;
 
 	*res = NULL;
 
@@ -1446,60 +1503,28 @@ uc_uloop_pipe_receive_common(uc_vm_t *vm, int fd, uc_value_t **res, bool skip)
 		err_return(EINVAL);
 
 	len -= sizeof(len);
+	uc_uloop_pipe_parser_init(&parser);
 
 	while (len > 0) {
 		rlen = read(fd, buf, len < sizeof(buf) ? len : sizeof(buf));
 
-		if (rlen == -1) {
-			if (errno == EINTR)
-				continue;
+		if (rlen == -1 && errno == EINTR)
+			continue;
 
-			goto read_fail;
+		if (rlen <= 0) {
+			err = rlen ? errno : EPIPE;
+			uc_uloop_pipe_parser_free(&parser);
+			err_return(err);
 		}
 
-		/* premature EOF */
-		if (rlen == 0) {
-			errno = EPIPE;
-			goto read_fail;
-		}
-
-		if (!skip) {
-			if (!tok)
-				tok = xjs_new_tokener();
-
-			jso = json_tokener_parse_ex(tok, buf, rlen);
-			err = json_tokener_get_error(tok);
-		}
-
+		uc_uloop_pipe_parser_feed(&parser, buf, rlen);
 		len -= rlen;
 	}
 
-	if (!skip) {
-		if (err == json_tokener_continue) {
-			jso = json_tokener_parse_ex(tok, "\0", 1);
-			err = json_tokener_get_error(tok);
-		}
-
-		json_tokener_free(tok);
-
-		if (err != json_tokener_success) {
-			errno = EINVAL;
-			goto read_fail;
-		}
-
-		*res = ucv_from_json(vm, jso);
-
-		json_object_put(jso);
-	}
+	if (!uc_uloop_pipe_parser_finish(vm, &parser, res))
+		err_return(EINVAL);
 
 	return true;
-
-read_fail:
-	if (tok)
-		json_tokener_free(tok);
-
-	json_object_put(jso);
-	err_return(errno);
 }
 
 /**
@@ -1543,7 +1568,7 @@ uc_uloop_pipe_receive(uc_vm_t *vm, size_t nargs)
 	writeall(pipe->output, &len, sizeof(len));
 
 	/* receive input message */
-	uc_uloop_pipe_receive_common(vm, pipe->input, &rv, false);
+	uc_uloop_pipe_receive_common(vm, pipe->input, &rv);
 
 	return rv;
 }
@@ -1639,6 +1664,15 @@ typedef struct {
 	int input_fd;
 	uc_value_t *input_cb;
 	uc_value_t *output_cb;
+	struct {
+		union {
+			size_t len;
+			char bytes[sizeof(size_t)];
+		} hdr;
+		size_t hdr_len;
+		size_t left;
+		uc_uloop_pipe_parser_t parser;
+	} rx;
 } uc_uloop_task_t;
 
 static int
@@ -1674,6 +1708,9 @@ uc_uloop_task_detach(uc_uloop_task_t *task)
 
 	uloop_fd_close(&task->output);
 	uloop_process_delete(&task->process);
+	uc_uloop_pipe_parser_free(&task->rx.parser);
+	task->rx.hdr_len = 0;
+	task->rx.left = 0;
 }
 
 static void
@@ -1790,50 +1827,130 @@ uc_uloop_task_finished(uc_vm_t *vm, size_t nargs)
 }
 
 static void
+uc_uloop_task_input(uc_uloop_task_t *task)
+{
+	uc_vm_t *vm = task->cb.vm;
+	uc_value_t *msg;
+
+	uc_vm_stack_push(vm, ucv_get(task->cb.obj));
+	uc_vm_stack_push(vm, ucv_get(task->input_cb));
+
+	if (!uc_uloop_vm_call(vm, true, 0))
+		return;
+
+	msg = uc_vm_stack_pop(vm);
+	uc_uloop_pipe_send_common(vm, msg, task->input_fd);
+	ucv_put(msg);
+}
+
+static void
+uc_uloop_task_output(uc_uloop_task_t *task, uc_value_t *msg)
+{
+	uc_vm_t *vm = task->cb.vm;
+
+	uc_vm_stack_push(vm, ucv_get(task->cb.obj));
+	uc_vm_stack_push(vm, ucv_get(task->output_cb));
+	uc_vm_stack_push(vm, msg);
+
+	if (uc_uloop_vm_call(vm, true, 1))
+		ucv_put(uc_vm_stack_pop(vm));
+}
+
+static bool
+uc_uloop_task_header(uc_uloop_task_t *task)
+{
+	size_t len = task->rx.hdr.len;
+
+	/* message length 0 is special, means input requested on other pipe */
+	if (len == 0) {
+		uc_uloop_task_input(task);
+
+		return true;
+	}
+
+	if (len <= sizeof(len)) {
+		uloop_fd_close(&task->output);
+
+		return false;
+	}
+
+	task->rx.left = len - sizeof(len);
+
+	if (task->output_cb)
+		uc_uloop_pipe_parser_init(&task->rx.parser);
+
+	return true;
+}
+
+static void
+uc_uloop_task_payload(uc_uloop_task_t *task, const char *buf, size_t len)
+{
+	uc_value_t *msg;
+
+	uc_uloop_pipe_parser_feed(&task->rx.parser, buf, len);
+	task->rx.left -= len;
+
+	if (task->rx.left == 0 &&
+	    uc_uloop_pipe_parser_finish(task->cb.vm, &task->rx.parser, &msg))
+		uc_uloop_task_output(task, msg);
+}
+
+/* A read never crosses the end of a message, and the parser state is reset
+ * before the callback runs, as the callback may run a nested uloop.run()
+ * that reads from the same task. */
+static bool
+uc_uloop_task_receive(uc_uloop_task_t *task)
+{
+	char buf[4096], *dst = buf;
+	size_t want;
+	ssize_t rlen;
+
+	if (task->rx.left > 0) {
+		want = task->rx.left < sizeof(buf) ? task->rx.left : sizeof(buf);
+	}
+	else {
+		dst = task->rx.hdr.bytes + task->rx.hdr_len;
+		want = sizeof(task->rx.hdr) - task->rx.hdr_len;
+	}
+
+	rlen = read(task->output.fd, dst, want);
+
+	if (rlen == -1 && errno == EINTR)
+		return true;
+
+	if (rlen == -1 && (errno == EAGAIN || errno == EWOULDBLOCK))
+		return false;
+
+	if (rlen <= 0) {
+		uloop_fd_delete(&task->output);
+
+		return false;
+	}
+
+	if (dst == buf) {
+		uc_uloop_task_payload(task, buf, rlen);
+
+		return true;
+	}
+
+	task->rx.hdr_len += rlen;
+
+	if (task->rx.hdr_len < sizeof(task->rx.hdr))
+		return true;
+
+	task->rx.hdr_len = 0;
+
+	return uc_uloop_task_header(task);
+}
+
+static void
 uc_uloop_task_output_cb(struct uloop_fd *fd, unsigned int flags)
 {
 	uc_uloop_task_t *task = container_of(fd, uc_uloop_task_t, output);
 	uc_value_t *obj = ucv_get(task->cb.obj);
-	uc_vm_t *vm = task->cb.vm;
-	uc_value_t *msg = NULL;
 
-	if (flags & ULOOP_READ) {
-		while (true) {
-			if (!uc_uloop_pipe_receive_common(vm, fd->fd, &msg, !task->output_cb)) {
-				/* input requested */
-				if (last_error == ENODATA) {
-					uc_vm_stack_push(vm, ucv_get(obj));
-					uc_vm_stack_push(vm, ucv_get(task->input_cb));
-
-					if (!uc_uloop_vm_call(vm, true, 0))
-						break;
-
-					msg = uc_vm_stack_pop(vm);
-					uc_uloop_pipe_send_common(vm, msg, task->input_fd);
-					ucv_put(msg);
-
-					continue;
-				}
-
-				/* error */
-				break;
-			}
-
-			if (task->output_cb) {
-				uc_vm_stack_push(vm, ucv_get(obj));
-				uc_vm_stack_push(vm, ucv_get(task->output_cb));
-				uc_vm_stack_push(vm, msg);
-
-				if (!uc_uloop_vm_call(vm, true, 1))
-					break;
-
-				ucv_put(uc_vm_stack_pop(vm));
-			}
-			else {
-				ucv_put(msg);
-			}
-		}
-	}
+	while (fd->fd != -1 && uc_uloop_task_receive(task))
+		;
 
 	if (!fd->registered && task->finished)
 		uc_uloop_task_clear(task);
@@ -1974,7 +2091,7 @@ uc_uloop_task(uc_vm_t *vm, size_t nargs)
 	task->output.fd = outpipe[0];
 	task->output.cb = uc_uloop_task_output_cb;
 	task->output_cb = output_cb;
-	uloop_fd_add(&task->output, ULOOP_READ | ULOOP_BLOCKING);
+	uloop_fd_add(&task->output, ULOOP_READ);
 
 	if (input_cb) {
 		task->input_fd = inpipe[1];
