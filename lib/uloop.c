@@ -2033,19 +2033,13 @@ uc_uloop_task(uc_vm_t *vm, size_t nargs)
 	    (input_cb && !ucv_is_callable(input_cb)))
 	    err_return(EINVAL);
 
-	if (pipe(outpipe) == -1 || pipe(inpipe) == -1) {
-		err = errno;
-
-		close(outpipe[0]); close(outpipe[1]);
-		close(inpipe[0]); close(inpipe[1]);
-
-		err_return(err);
-	}
+	if (pipe(outpipe) == -1 || pipe(inpipe) == -1)
+		goto fail;
 
 	pid = fork();
 
 	if (pid == -1)
-		err_return(errno);
+		goto fail;
 
 	if (pid == 0) {
 		uloop_done();
@@ -2111,6 +2105,14 @@ uc_uloop_task(uc_vm_t *vm, size_t nargs)
 	ucv_resource_value_set(task->cb.obj, 1, cbs);
 
 	ok_return(task->cb.obj);
+
+fail:
+	err = errno;
+
+	close(outpipe[0]); close(outpipe[1]);
+	close(inpipe[0]); close(inpipe[1]);
+
+	err_return(err);
 }
 
 
