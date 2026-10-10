@@ -407,9 +407,12 @@ uc_uloop_end(uc_vm_t *vm, size_t nargs)
  * // Stop the uloop event loop and clean up resources
  * uloop.done();
  */
+static void uc_uloop_handles_detach(void);
+
 static uc_value_t *
 uc_uloop_done(uc_vm_t *vm, size_t nargs)
 {
+	uc_uloop_handles_detach();
 	uloop_done();
 
 	ok_return(NULL);
@@ -682,7 +685,11 @@ typedef struct {
 	dev_t dev;
 	ino_t ino;
 	bool error_cb;
+	struct list_head list;
 } uc_uloop_handle_t;
+
+/* Live handles of all VMs, as they share the epoll instance of uloop. */
+static LIST_HEAD(uc_uloop_handles);
 
 static void
 uc_uloop_handle_dead_cb(struct uloop_fd *fd, unsigned int flags)
@@ -695,26 +702,83 @@ uc_uloop_handle_is_dead(uc_uloop_handle_t *handle)
 	return handle->fd.cb == uc_uloop_handle_dead_cb;
 }
 
-static int
-uc_uloop_handle_fd_delete(uc_uloop_handle_t *handle)
+static bool
+uc_uloop_handle_fd_valid(uc_uloop_handle_t *handle)
 {
-	int fd = handle->fd.fd;
 	struct stat st;
 
-	if (!handle->fd.registered ||
-	    (fstat(fd, &st) == 0 &&
-	     st.st_dev == handle->dev && st.st_ino == handle->ino))
-		return uloop_fd_delete(&handle->fd);
+	return fstat(handle->fd.fd, &st) == 0 &&
+	       st.st_dev == handle->dev && st.st_ino == handle->ino;
+}
 
-	/* The number may refer to another watched file now, and epoll may still
-	 * report the old file to this handle, so leave epoll alone and ignore
-	 * those reports. */
+/* Drops the uloop state, but leaves the epoll entry of the number alone. */
+static void
+uc_uloop_handle_unregister(uc_uloop_handle_t *handle)
+{
+	int fd = handle->fd.fd;
+
+	list_del_init(&handle->list);
+
 	handle->fd.fd = -1;
 	uloop_fd_delete(&handle->fd);
 	handle->fd.fd = fd;
+}
+
+/* The number may refer to another watched file now, and epoll may still
+ * report the old file to this handle, so leave epoll alone and ignore those
+ * reports. */
+static void
+uc_uloop_handle_kill(uc_uloop_handle_t *handle)
+{
+	uc_uloop_handle_unregister(handle);
 	handle->fd.cb = uc_uloop_handle_dead_cb;
+}
+
+/* uloop_done() closes the epoll instance together with all its entries. */
+static void
+uc_uloop_handles_detach(void)
+{
+	uc_uloop_handle_t *handle, *tmp;
+
+	list_for_each_entry_safe(handle, tmp, &uc_uloop_handles, list) {
+		uc_uloop_handle_unregister(handle);
+		uc_uloop_cb_unpin(&handle->cb);
+	}
+}
+
+/* A failed removal means that the number refers to another file, even if
+ * device and inode match. */
+static int
+uc_uloop_handle_fd_delete(uc_uloop_handle_t *handle)
+{
+	if (!handle->fd.registered)
+		return uloop_fd_delete(&handle->fd);
+
+	list_del_init(&handle->list);
+
+	if (!uc_uloop_handle_fd_valid(handle) ||
+	    uloop_fd_delete(&handle->fd) != 0)
+		uc_uloop_handle_kill(handle);
 
 	return 0;
+}
+
+/* A new registration on a number means that older handles on it lost
+ * their file. */
+static void
+uc_uloop_handle_claim(uc_uloop_handle_t *handle)
+{
+	uc_uloop_handle_t *other, *tmp;
+
+	list_for_each_entry_safe(other, tmp, &uc_uloop_handles, list) {
+		if (other->fd.fd != handle->fd.fd)
+			continue;
+
+		uc_uloop_handle_kill(other);
+		uc_uloop_cb_values_clear(&other->cb);
+	}
+
+	list_add_tail(&handle->list, &uc_uloop_handles);
 }
 
 static int
@@ -795,6 +859,16 @@ uc_uloop_handle_handle(uc_vm_t *vm, size_t nargs)
  * Call this method before closing the underlying descriptor. The event loop
  * does not notice a closed descriptor and keeps the handle alive until it
  * is deleted.
+ *
+ * A handle knows its descriptor only by number, device and inode, and checks
+ * them when it is deleted. A handle whose descriptor was closed is disabled
+ * for good once the check fails, once uloop rejects the removal, or once
+ * another handle is created on the same number. It then stays allocated and
+ * ignores events. If the number was reused for the same file opened anew, for
+ * example the same path or device node, and a watcher outside of this module,
+ * such as the application that embeds ucode, watches it, the check cannot
+ * tell the two files apart, and deleting the old handle removes the other
+ * watcher's entry.
  *
  * @function module:uloop.handle#delete
  *
@@ -975,6 +1049,7 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 	handle->dev = st.st_dev;
 	handle->ino = st.st_ino;
 	handle->error_cb = f & ULOOP_ERROR_CB;
+	INIT_LIST_HEAD(&handle->list);
 
 	/* uloop_fd_add() succeeds without registering the descriptor when no
 	 * event to wait for is given, e.g. for ULOOP_ERROR_CB alone */
@@ -986,6 +1061,7 @@ uc_uloop_handle(uc_vm_t *vm, size_t nargs)
 	}
 
 	uc_uloop_cb_pin(&handle->cb);
+	uc_uloop_handle_claim(handle);
 	ucv_resource_value_set(handle->cb.obj, 1, ucv_get(fileno));
 	ok_return(handle->cb.obj);
 }
