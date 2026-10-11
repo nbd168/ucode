@@ -144,6 +144,24 @@ ucv_put_value(uc_value_t *uv, bool retain)
 		ucv_free(uv, retain);
 }
 
+/* The collector keeps its reachability marks in a dedicated bit, separate
+ * from the mark used for stringification cycle detection: a tostring
+ * callback may trigger a collection while the formatter has marked the
+ * active traversal path, and the mark phase must then descend into those
+ * marked containers instead of stopping at their marks. */
+static inline bool
+ucv_is_gc_marked(uc_value_t *uv)
+{
+	return (((uintptr_t)uv & 3) == 0 && uv != NULL && uv->gc_mark == true);
+}
+
+static inline void
+ucv_set_gc_mark(uc_value_t *uv)
+{
+	if (((uintptr_t)uv & 3) == 0 && uv != NULL)
+		uv->gc_mark = true;
+}
+
 static void
 ucv_gc_mark(uc_value_t *uv);
 
@@ -161,7 +179,7 @@ ucv_gc_mark(uc_value_t *uv)
 	struct lh_entry *entry;
 	size_t i;
 
-	if (ucv_is_marked(uv))
+	if (ucv_is_gc_marked(uv))
 		return;
 
 	switch (ucv_type(uv)) {
@@ -169,7 +187,7 @@ ucv_gc_mark(uc_value_t *uv)
 		array = ucv_as_array(uv);
 
 		if (array->ref.next)
-			ucv_set_mark(uv);
+			ucv_set_gc_mark(uv);
 
 		ucv_gc_mark(array->proto);
 
@@ -182,7 +200,7 @@ ucv_gc_mark(uc_value_t *uv)
 		object = ucv_as_object(uv);
 
 		if (object->ref.next)
-			ucv_set_mark(uv);
+			ucv_set_gc_mark(uv);
 
 		ucv_gc_mark(object->proto);
 
@@ -196,7 +214,7 @@ ucv_gc_mark(uc_value_t *uv)
 		function = closure->function;
 
 		if (closure->ref.next)
-			ucv_set_mark(uv);
+			ucv_set_gc_mark(uv);
 
 		for (i = 0; i < function->nupvals; i++)
 			ucv_gc_mark(&closure->upvals[i]->header);
@@ -215,7 +233,7 @@ ucv_gc_mark(uc_value_t *uv)
 			uc_resource_ext_t *res = (uc_resource_ext_t *)uv;
 
 			if (res->ref.next)
-				ucv_set_mark(uv);
+				ucv_set_gc_mark(uv);
 
 			values = ucv_resource_values(res);
 
@@ -398,7 +416,7 @@ ucv_get(uc_value_t *uv)
 	if (uv == NULL || (uintptr_t)uv & 3)
 		return uv;
 
-	assert(uv->refcount < 0x03ffffff);
+	assert(uv->refcount < 0x01ffffff);
 
 	uv->refcount++;
 
@@ -1929,6 +1947,8 @@ void
 ucv_to_stringbuf_formatted(uc_vm_t *vm, uc_stringbuf_t *pb, uc_value_t *uv, size_t depth, char pad_char, size_t pad_size)
 {
 	bool json = (pad_char != '\0');
+	bool constified = false;
+	size_t stackoff = 0;
 	uc_resource_type_t *restype;
 	uc_cfunction_t *cfunction;
 	uc_function_t *function;
@@ -1947,8 +1967,20 @@ ucv_to_stringbuf_formatted(uc_vm_t *vm, uc_stringbuf_t *pb, uc_value_t *uv, size
 		return;
 	}
 
-	if (vm != NULL && ucv_call_tostring(vm, pb, uv, json))
-		return;
+	/* with a VM, keep the value on the stack while its tostring callback (or
+	 * those of its children) may unlink it or run the collector, and make the
+	 * container constant so those callbacks cannot modify it during the
+	 * traversal; no callbacks are invoked once exit() has been called */
+	if (vm != NULL) {
+		stackoff = vm->stack.count;
+		uc_vm_stack_push(vm, ucv_get(uv));
+
+		if (vm->exception.type != EXCEPTION_EXIT &&
+		    ucv_call_tostring(vm, pb, uv, json))
+			goto out;
+
+		constified = ucv_set_constant(uv, true);
+	}
 
 	ucv_set_mark(uv);
 
@@ -2164,6 +2196,14 @@ ucv_to_stringbuf_formatted(uc_vm_t *vm, uc_stringbuf_t *pb, uc_value_t *uv, size
 	}
 
 	ucv_clear_mark(uv);
+
+	if (constified)
+		ucv_set_constant(uv, false);
+
+out:
+	/* exit() within a callback resets the entire stack, our slot included */
+	if (vm != NULL && vm->stack.count > stackoff)
+		ucv_put(uc_vm_stack_pop(vm));
 }
 
 static char *
@@ -3090,8 +3130,8 @@ ucv_gc_common(uc_vm_t *vm, bool final)
 	for (ref = vm->values.next; ref != &vm->values; ref = ref->next) {
 		val = (uc_value_t *)((uintptr_t)ref - offsetof(uc_array_t, ref));
 
-		if (ucv_is_marked(val))
-			ucv_clear_mark(val);
+		if (val->gc_mark)
+			val->gc_mark = false;
 		else
 			ucv_free(val, true);
 	}
