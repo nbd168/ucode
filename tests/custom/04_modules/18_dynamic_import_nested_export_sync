@@ -1,0 +1,55 @@
+This testcase verifies that the module namespace returned by a runtime
+`import()` expression is correctly mapped to the module exports if the
+imported module statically imports a module which in turn statically
+imports further modules.
+
+The exports of all transitively linked modules occupy the leading slots of
+the shared export table, so the export offset of the dynamically imported
+root module must account for the nested modules as well, not just for the
+exports of its direct imports.
+
+The dependency tree is:
+
+root
+ + import: outer
+    + import: middle
+       + import: inner
+
+-- Testcase --
+mod = import('outer');
+
+printf("m = %.J\n", mod);
+printf("f() = %s, g() = %s\n", mod.f(), mod.g());
+-- End --
+
+-- File inner.uc --
+export const value = 5;
+export function fn() { return "inner"; }
+export function fn2() { return "inner2"; }
+-- End --
+
+-- File middle.uc --
+import { fn } from 'inner';
+
+export const mvalue = 7;
+export function mfn() { return "middle" + fn(); }
+-- End --
+
+-- File outer.uc --
+import { mfn } from 'middle';
+
+export function f() { return "f"; }
+export function g() { return mfn(); }
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+m = {
+	"f": "function f() { ... }",
+	"g": "function g() { ... }"
+}
+f() = f, g() = middleinner
+-- End --

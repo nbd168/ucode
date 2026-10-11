@@ -3726,7 +3726,7 @@ uc_compiler_compile_module_source(uc_compiler_t *compiler, const char *modname, 
 		.module_search_path = compiler->parser->lex.config->module_search_path
 	};
 
-	size_t i, load_idx = 0, n_imports = 0;
+	size_t i, load_idx = 0, n_imports = 0, n_exports = 0;
 	bool loaded = false;
 	uc_value_t *import;
 	ssize_t slot;
@@ -3763,12 +3763,20 @@ uc_compiler_compile_module_source(uc_compiler_t *compiler, const char *modname, 
 			uc_program_function_last(compiler->program)) + 1;
 
 		source->exports.offset = (size_t)-1;
+		n_exports = uc_compiler_get_exportnum(compiler);
 
 		if (!uc_compile_from_source(&config, source, compiler->program, errp))
 			return false;
 
+		/* The linked module's own exports are the last ones allocated while
+		 * compiling it, its offset is the allocation counter minus its count. */
 		source->exports.offset = uc_compiler_get_exportnum(compiler) - source->exports.count;
-		uc_compiler_current_source(compiler)->exports.offset += source->exports.count;
+
+		/* The importing source's own exports follow everything that got
+		 * allocated while compiling the import, i.e. the exports of the linked
+		 * module plus those of all modules it pulled in transitively. */
+		uc_compiler_current_source(compiler)->exports.offset +=
+			uc_compiler_get_exportnum(compiler) - n_exports;
 
 		/* emit load, call & pop instructions */
 		uc_compiler_emit_insn(compiler, compiler->parser->prev.pos, I_CLFN);
