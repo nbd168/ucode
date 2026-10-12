@@ -992,10 +992,16 @@ ucv_free_object_entry(struct lh_entry *entry)
 uc_value_t *
 ucv_object_new(uc_vm_t *vm)
 {
+	return ucv_object_new_size(vm, 16);
+}
+
+uc_value_t *
+ucv_object_new_size(uc_vm_t *vm, size_t size)
+{
 	struct lh_table *table;
 	uc_object_t *object;
 
-	table = lh_kchar_table_new(16, ucv_free_object_entry);
+	table = lh_kchar_table_new(size, ucv_free_object_entry);
 
 	if (!table) {
 		fprintf(stderr, "Out of memory\n");
