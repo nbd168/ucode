@@ -3020,6 +3020,10 @@ uc_require_ucode(uc_vm_t *vm, const char *path, uc_value_t *scope, uc_value_t **
 
 	closure = uc_loadfile(vm, 1);
 
+	/* the module body runs with this configuration; a file that it loads is
+	 * not a module */
+	config.compile_module = prev_config->compile_module;
+
 	ucv_put(uc_vm_stack_pop(vm));
 
 	if (closure) {
