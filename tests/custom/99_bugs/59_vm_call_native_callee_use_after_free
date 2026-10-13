@@ -1,0 +1,31 @@
+When uc_vm_call() invoked a native function, it inspected the type of
+the function value after the call returned. The frame of the native
+callee released the function value on return, so if the stack slot
+held the only other reference, the type check read freed memory.
+
+`render()` calls the function in its first argument slot through
+uc_vm_call(). The function value below has no reference other than
+that slot, because its module is removed from the modules table
+before the call.
+
+This test depends on running under a memory checker.
+
+-- Testcase --
+function access_fn_get() {
+	let fs = require('fs');
+
+	delete modules.fs;
+
+	return fs.access;
+}
+
+print(length(render(access_fn_get(), '/')), "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+0
+-- End --

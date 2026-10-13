@@ -3706,13 +3706,12 @@ uc_vm_call(uc_vm_t *vm, bool mcall, size_t nargs)
 {
 	uc_value_t *ctx = mcall ? ucv_get(uc_vm_stack_peek(vm, nargs + 1)) : NULL;
 	uc_value_t *fno = ucv_get(uc_vm_stack_peek(vm, nargs));
+	bool native = (ucv_type(fno) == UC_CFUNCTION);
 
 	uc_vm_clear_exception(vm);
 
-	if (uc_vm_call_function(vm, ctx, fno, mcall, nargs & 0xffff, false)) {
-		if (ucv_type(fno) != UC_CFUNCTION)
-			uc_vm_execute_chunk(vm);
-	}
+	if (uc_vm_call_function(vm, ctx, fno, mcall, nargs & 0xffff, false) && !native)
+		uc_vm_execute_chunk(vm);
 
 	return vm->exception.type;
 }
