@@ -3678,6 +3678,7 @@ static bool
 uc_compiler_compile_dynload(uc_compiler_t *compiler, const char *name, uc_value_t *imports)
 {
 	uc_value_t *modname = ucv_string_new(name);
+	size_t pos = compiler->parser->prev.pos;
 	size_t i, n_imports;
 	uc_value_t *import;
 
@@ -3685,8 +3686,8 @@ uc_compiler_compile_dynload(uc_compiler_t *compiler, const char *name, uc_value_
 		import = ucv_array_get(imports, i);
 
 		if (ucv_boolean_get(import)) {
-			uc_compiler_emit_constant(compiler, 0, modname);
-			uc_compiler_emit_insn(compiler, 0, I_DYNLOAD);
+			uc_compiler_emit_constant(compiler, pos, modname);
+			uc_compiler_emit_insn(compiler, pos, I_DYNLOAD);
 			uc_compiler_emit_u32(compiler, 0, 0);
 		}
 		else {
@@ -3695,8 +3696,8 @@ uc_compiler_compile_dynload(uc_compiler_t *compiler, const char *name, uc_value_
 	}
 
 	if (n_imports > 0) {
-		uc_compiler_emit_constant(compiler, 0, modname);
-		uc_compiler_emit_insn(compiler, 0, I_DYNLOAD);
+		uc_compiler_emit_constant(compiler, pos, modname);
+		uc_compiler_emit_insn(compiler, pos, I_DYNLOAD);
 		uc_compiler_emit_u32(compiler, 0, n_imports | ((compiler->upvals.count - n_imports) << 16));
 
 		for (i = 0; i < ucv_array_length(imports); i++) {

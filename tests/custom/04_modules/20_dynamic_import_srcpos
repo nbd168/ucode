@@ -1,0 +1,36 @@
+This testcase verifies that the dynamic load an import compiles to
+carries the source position of the import statement.
+
+The compiler emitted the dynamic load at source position 0, so a stack
+trace through a module that raised during the load pointed at the start
+of the import statement instead of the module name.
+
+-- Testcase --
+let fn = loadstring('let x = 1;\n\nimport { a } from "raiser";\n', {
+	raw_mode: true,
+	force_dynlink_list: [ 'raiser' ]
+});
+
+try {
+	fn();
+}
+catch (e) {
+	for (let frame in slice(e.stacktrace, 0, 2))
+		printf("%s:%d:%d\n", frame.filename, frame.line, frame.byte);
+}
+-- End --
+
+-- File raiser.uc --
+export const a = 1;
+
+die("raised in module");
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+files/raiser.uc:3:23
+[loadstring argument]:3:19
+-- End --
