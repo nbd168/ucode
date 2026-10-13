@@ -36,6 +36,36 @@ uc_source_alloc(const char *name)
 }
 
 uc_source_t *
+uc_source_new_slurp(const char *name, FILE *fp)
+{
+	size_t rlen = 0, tlen = 0;
+	char buf[128], *p = NULL;
+
+	while (true) {
+		rlen = fread(buf, 1, sizeof(buf), fp);
+
+		if (rlen == 0)
+			break;
+
+		/* uc_program_write() stores the buffer as a string */
+		p = xrealloc(p, tlen + rlen + 1);
+		memcpy(p + tlen, buf, rlen);
+		tlen += rlen;
+		p[tlen] = 0;
+	}
+
+	/* On empty input, provide a dummy buffer and ensure that it is
+	 * at least one byte long, due to
+	 * https://github.com/google/sanitizers/issues/627 */
+	if (p == NULL) {
+		p = xstrdup("\n");
+		tlen = 1;
+	}
+
+	return uc_source_new_buffer(name, p, tlen);
+}
+
+uc_source_t *
 uc_source_new_file(const char *path)
 {
 	FILE *fp = fopen(path, "rb");
@@ -43,6 +73,15 @@ uc_source_new_file(const char *path)
 
 	if (!fp)
 		return NULL;
+
+	/* the type test seeks in the file, and the content of a pipe cannot be
+	 * read again for an error message */
+	if (fseek(fp, 0L, SEEK_SET)) {
+		src = uc_source_new_slurp(path, fp);
+		fclose(fp);
+
+		return src;
+	}
 
 	src = uc_source_alloc(path);
 	src->fp = fp;

@@ -378,38 +378,18 @@ out:
 static uc_source_t *
 read_stdin(void)
 {
-	size_t rlen = 0, tlen = 0;
-	char buf[128], *p = NULL;
+	FILE *fp = stdin_unused;
 
-	if (!stdin_unused) {
+	if (!fp) {
 		fprintf(stderr, "The stdin can only be read once\n");
 		errno = EINVAL;
 
 		return NULL;
 	}
 
-	while (true) {
-		rlen = fread(buf, 1, sizeof(buf), stdin_unused);
-
-		if (rlen == 0)
-			break;
-
-		p = xrealloc(p, tlen + rlen);
-		memcpy(p + tlen, buf, rlen);
-		tlen += rlen;
-	}
-
 	stdin_unused = NULL;
 
-	/* On empty stdin, provide a dummy buffer and ensure that it is
-	 * at least one byte long, due to
-	 * https://github.com/google/sanitizers/issues/627 */
-	if (p == NULL) {
-		p = xstrdup("\n");
-		tlen = 1;
-	}
-
-	return uc_source_new_buffer("[stdin]", p, tlen);
+	return uc_source_new_slurp("[stdin]", fp);
 }
 
 static void

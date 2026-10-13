@@ -5843,7 +5843,7 @@ uc_compile_parse_config(uc_parse_config_t *config, uc_value_t *spec)
 }
 
 static uc_value_t *
-uc_load_common(uc_vm_t *vm, size_t nargs, uc_source_t *source)
+uc_load_common(uc_vm_t *vm, size_t nargs, uc_source_t *source, bool is_file)
 {
 	uc_parse_config_t conf = *vm->config;
 	uc_program_t *program;
@@ -5866,7 +5866,7 @@ uc_load_common(uc_vm_t *vm, size_t nargs, uc_source_t *source)
 	if (!closure) {
 		uc_error_message_indent(&err);
 
-		if (source->buffer)
+		if (!is_file)
 			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME,
 				"Unable to compile source string:\n\n%s", err);
 		else
@@ -5947,7 +5947,7 @@ uc_loadstring(uc_vm_t *vm, size_t nargs)
 		return NULL;
 	}
 
-	return uc_load_common(vm, nargs, source);
+	return uc_load_common(vm, nargs, source, false);
 }
 
 /**
@@ -5992,7 +5992,7 @@ uc_loadfile(uc_vm_t *vm, size_t nargs)
 		return NULL;
 	}
 
-	return uc_load_common(vm, nargs, source);
+	return uc_load_common(vm, nargs, source, true);
 }
 
 /**
