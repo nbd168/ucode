@@ -2997,6 +2997,16 @@ uc_vm_insn_delete(uc_vm_t *vm, uc_vm_insn_t insn)
 	ucv_put(v);
 }
 
+/* a closure that runs again holds the binding of its previous run */
+static void
+uc_vm_import_bind(uc_closure_t *closure, size_t slot, uc_upvalref_t *ref)
+{
+	if (closure->upvals[slot])
+		ucv_put(&closure->upvals[slot]->header);
+
+	closure->upvals[slot] = ref;
+}
+
 static void
 uc_vm_insn_import(uc_vm_t *vm, uc_vm_insn_t insn)
 {
@@ -3044,14 +3054,14 @@ uc_vm_insn_import(uc_vm_t *vm, uc_vm_insn_t insn)
 
 	/* module export available, patch into upvalue */
 	else if (from < prog->exports.count && prog->exports.entries[from]) {
-		frame->closure->upvals[to] = prog->exports.entries[from];
 		ucv_get(&prog->exports.entries[from]->header);
+		uc_vm_import_bind(frame->closure, to, prog->exports.entries[from]);
 	}
 
 	/* module export missing, e.g. due to premature return in module,
 	 * patch up dummy upvalue ref with `null` value */
 	else {
-		frame->closure->upvals[to] = (uc_upvalref_t *)ucv_upvalref_new(0);
+		uc_vm_import_bind(frame->closure, to, (uc_upvalref_t *)ucv_upvalref_new(0));
 		frame->closure->upvals[to]->closed = true;
 	}
 }
@@ -3139,7 +3149,7 @@ uc_vm_insn_dynload(uc_vm_t *vm, uc_vm_insn_t insn)
 
 			ucv_put(name);
 
-			frame->closure->upvals[to] = (uc_upvalref_t *)ucv_upvalref_new(0);
+			uc_vm_import_bind(frame->closure, to, (uc_upvalref_t *)ucv_upvalref_new(0));
 			frame->closure->upvals[to]->closed = true;
 			frame->closure->upvals[to]->value = ucv_get(export);
 
