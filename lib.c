@@ -2985,7 +2985,16 @@ uc_require_imports(uc_vm_t *vm, uc_value_t *closure)
 	uc_export_instance_t *instance =
 		uc_program_instance_get(fn->program, ucv_as_closure(closure), false);
 	uc_value_t *ns = ucv_object_new(vm);
-	size_t i = src->exports.offset;
+	size_t own = 0, i = 0;
+
+	/* The module exports its own symbols last, after those of the modules
+	 * that it links. A precompiled module does not record their offset. */
+	uc_vector_foreach(&src->exports, sym)
+		if (ucv_type(*sym) == UC_STRING || ucv_type(*sym) == UC_NULL)
+			own++;
+
+	if (instance && instance->exports.count > own)
+		i = instance->exports.count - own;
 
 	uc_vector_foreach(&src->exports, sym) {
 		if (!instance || i >= instance->exports.count)

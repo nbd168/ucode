@@ -1,0 +1,40 @@
+A precompiled module that links another module statically exports its own
+symbols, like the module does when it is loaded from source. The exports of
+the linked module come first in the export table and are not part of the
+namespace.
+
+-- Testcase --
+import { readlink } from 'fs';
+
+function show(label, mod) {
+	print(label, ": ", sort(keys(mod)), " ", mod.own(), " ", mod.name, " ", mod.default, "\n");
+}
+
+system([ readlink("/proc/self/exe"), "-cmodule", "-o", "files/precompiled.uc", "files/outer.uc" ]);
+
+show("source", import("outer"));
+show("precompiled", import("precompiled"));
+-- End --
+
+-- File inner.uc --
+export function helper() { return "inner helper"; };
+export const name = "inner";
+export default "inner default";
+-- End --
+
+-- File outer.uc --
+import { helper } from "./inner.uc";
+
+export function own() { return `outer own, ${helper()}`; };
+export const name = "outer";
+export default "outer default";
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+source: [ "default", "name", "own" ] outer own, inner helper outer outer default
+precompiled: [ "default", "name", "own" ] outer own, inner helper outer outer default
+-- End --
