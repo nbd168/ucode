@@ -1,0 +1,70 @@
+This testcase verifies that a dynamic load reads the importing callframe
+after the module body ran.
+
+The module body of chain0 runs the bodies of the modules it imports,
+which pushes more callframes. When the callframe vector grows, realloc()
+can move it, and a callframe pointer taken before the load then points
+into freed memory.
+
+This test depends on running under a memory checker.
+
+-- Testcase --
+let fn = loadstring('import { value } from "chain0";\nprint(value, "\\n");\n', {
+	raw_mode: true,
+	force_dynlink_list: [ 'chain0' ]
+});
+
+fn();
+-- End --
+
+-- File chain0.uc --
+import { value as v } from "chain1";
+export const value = v + 1;
+-- End --
+
+-- File chain1.uc --
+import { value as v } from "chain2";
+export const value = v + 1;
+-- End --
+
+-- File chain2.uc --
+import { value as v } from "chain3";
+export const value = v + 1;
+-- End --
+
+-- File chain3.uc --
+import { value as v } from "chain4";
+export const value = v + 1;
+-- End --
+
+-- File chain4.uc --
+import { value as v } from "chain5";
+export const value = v + 1;
+-- End --
+
+-- File chain5.uc --
+import { value as v } from "chain6";
+export const value = v + 1;
+-- End --
+
+-- File chain6.uc --
+import { value as v } from "chain7";
+export const value = v + 1;
+-- End --
+
+-- File chain7.uc --
+import { value as v } from "chain8";
+export const value = v + 1;
+-- End --
+
+-- File chain8.uc --
+export const value = 0;
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+8
+-- End --

@@ -3088,10 +3088,10 @@ uc_vm_insn_export(uc_vm_t *vm, uc_vm_insn_t insn)
 static void
 uc_vm_insn_dynload(uc_vm_t *vm, uc_vm_insn_t insn)
 {
-	uc_callframe_t *frame = uc_vm_current_frame(vm);
 	uc_value_t *name, *export, *modscope, *modobj;
 	uint16_t count = vm->arg.u32 & 0xffff;
 	uint16_t to = vm->arg.u32 >> 16;
+	uc_callframe_t *frame;
 	uint32_t cidx;
 	bool found;
 
@@ -3124,6 +3124,8 @@ uc_vm_insn_dynload(uc_vm_t *vm, uc_vm_insn_t insn)
 
 	/* ... otherwise we're importing a specific list of names */
 	else {
+		frame = uc_vm_current_frame(vm);
+
 		/* Instruction is followed by `count` times u32 values containing
 		 * the import name constant indexes */
 		while (count > 0) {
