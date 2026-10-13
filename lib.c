@@ -3094,7 +3094,7 @@ uc_require_path(uc_vm_t *vm, const char *path_template, const char *name,
 	else if (!strcmp(p + 1, ".uc"))
 		rv = uc_require_ucode(vm, buf->buf, NULL, res, true, module_mode);
 
-	if (rv)
+	if (rv && vm->exception.type == EXCEPTION_NONE)
 		ucv_object_add(modtable, name, ucv_get(*res));
 
 out:
