@@ -5977,35 +5977,20 @@ static uc_value_t *
 uc_loadfile(uc_vm_t *vm, size_t nargs)
 {
 	uc_value_t *path = uc_fn_arg(0);
-	uc_source_t *source = NULL;
-	char *resolved;
+	uc_source_t *source;
 
 	if (ucv_type(path) != UC_STRING)
 		return NULL;
 
-	resolved = realpath(ucv_string_get(path), NULL);
-
-	if (resolved && lh_table_lookup_ex(vm->sources, (const void *)resolved, (void **)&source)) {
-		source = uc_source_get(source);
-	}
+	source = uc_source_new_file(ucv_string_get(path));
 
 	if (!source) {
-		source = uc_source_new_file(ucv_string_get(path));
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME,
+			"Unable to open source file %s: %s",
+			ucv_string_get(path), strerror(errno));
 
-		if (!source) {
-			free(resolved);
-			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME,
-				"Unable to open source file %s: %s",
-				ucv_string_get(path), strerror(errno));
-
-			return NULL;
-		}
-
-		if (resolved)
-			lh_table_insert(vm->sources, xstrdup(resolved), uc_source_get(source));
+		return NULL;
 	}
-
-	free(resolved);
 
 	return uc_load_common(vm, nargs, source);
 }

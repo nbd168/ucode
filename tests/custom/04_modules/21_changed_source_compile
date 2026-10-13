@@ -1,0 +1,83 @@
+Each loadfile() or include() call reads the current content of the file, also
+after an exception read the source line of an earlier version for its context.
+
+A program of an earlier call stays alive and keeps the line information of
+its own compilation, also after a later compilation of that file failed.
+
+-- Testcase --
+import * as fs from 'fs';
+
+function run(label, fn) {
+	try {
+		fn();
+	}
+	catch (e) {
+		printf("%s: %s: %s\n", label, e.type, split(e.message, "\n")[0]);
+	}
+}
+
+function load(label, path, code) {
+	fs.writefile(path, code);
+	run(label, () => loadfile(path)());
+}
+
+fs.mkdir("files");
+
+load("longer #1", "files/longer.uc", "print('short\\n');\nnull.x = 1;\n");
+load("longer #2", "files/longer.uc", "print('a longer second version\\n');\n");
+
+load("shorter #1", "files/shorter.uc", "print('a longer first version\\n');\nnull.x = 1;\n");
+load("shorter #2", "files/shorter.uc", "print('short\\n');\n");
+
+load("broken #1", "files/broken.uc", "print('valid\\n');\nnull.x = 1;\n");
+load("broken #2", "files/broken.uc", "let = 1;\n");
+load("broken #3", "files/broken.uc", "print('valid again\\n');\n");
+
+function line(label, fn) {
+	try {
+		fn();
+	}
+	catch (e) {
+		printf("%s: line %d\n", label, e.stacktrace[0].line);
+	}
+}
+
+let raise = "return function() {\n\tnull.x = 1;\n};\n";
+
+fs.writefile("files/live.uc", raise);
+let first = loadfile("files/live.uc")();
+line("first #1", first);
+
+fs.writefile("files/live.uc", "\n\n\n" + raise);
+let second = loadfile("files/live.uc")();
+line("first #2", first);
+line("second #1", second);
+
+fs.writefile("files/live.uc", "let = 1;\n");
+run("live", () => loadfile("files/live.uc"));
+line("first #3", first);
+line("second #2", second);
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+short
+longer #1: Type error: attempt to set property on null value
+a longer second version
+a longer first version
+shorter #1: Type error: attempt to set property on null value
+short
+valid
+broken #1: Type error: attempt to set property on null value
+broken #2: Runtime error: Unable to compile source file 'files/broken.uc':
+valid again
+first #1: line 2
+first #2: line 2
+second #1: line 5
+live: Runtime error: Unable to compile source file 'files/live.uc':
+first #3: line 2
+second #2: line 5
+-- End --

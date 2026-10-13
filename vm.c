@@ -269,8 +269,6 @@ void uc_vm_init(uc_vm_t *vm, uc_parse_config_t *config)
 
 	vm->open_upvals = NULL;
 
-	vm->sources = lh_kchar_table_new(16, NULL);
-
 	vm->values.prev = &vm->values;
 	vm->values.next = &vm->values;
 
@@ -326,23 +324,6 @@ void uc_vm_free(uc_vm_t *vm)
 	printbuf_free(vm->strbuf);
 
 	ucv_freeall(vm);
-
-	/* Release source cache entries after freeall so that all program refs
-	 * to sources are already gone and the cache refs are the last ones. */
-	if (vm->sources) {
-		struct lh_entry *entry, *next;
-
-		entry = vm->sources->head;
-
-		while (entry) {
-			next = entry->next;
-			ucv_put((uc_value_t *)lh_entry_v(entry));
-			free((char *)lh_entry_k(entry));
-			entry = next;
-		}
-
-		lh_table_free(vm->sources);
-	}
 
 	for (i = 0; i < vm->restypes.count; i++)
 		free(vm->restypes.entries[i]);
