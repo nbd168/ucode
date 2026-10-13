@@ -1135,6 +1135,9 @@ uc_ubus_vm_handle_exception(uc_vm_t *vm)
 {
 	uc_value_t *exh, *val;
 
+	if (vm->exception.type == EXCEPTION_EXIT)
+		goto error;
+
 	exh = uc_vm_registry_get(vm, "ubus.ex_handler");
 	if (!ucv_is_callable(exh))
 		goto error;
