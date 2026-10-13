@@ -21,6 +21,20 @@
 #include "ucode/internal/platform.h"
 
 
+static uc_source_t *
+uc_source_alloc(const char *name)
+{
+	uc_source_t *src = xalloc(ALIGN(sizeof(*src)) + strlen(name) + 1);
+
+	src->header.type = UC_SOURCE;
+	src->header.refcount = 1;
+
+	src->filename = strcpy((char *)src + ALIGN(sizeof(*src)), name);
+	src->runpath = src->filename;
+
+	return src;
+}
+
 uc_source_t *
 uc_source_new_file(const char *path)
 {
@@ -30,18 +44,8 @@ uc_source_new_file(const char *path)
 	if (!fp)
 		return NULL;
 
-	src = xalloc(ALIGN(sizeof(*src)) + strlen(path) + 1);
-
-	src->header.type = UC_SOURCE;
-	src->header.refcount = 1;
-
+	src = uc_source_alloc(path);
 	src->fp = fp;
-	src->buffer = NULL;
-	src->filename = strcpy((char *)src + ALIGN(sizeof(*src)), path);
-	src->runpath = src->filename;
-
-	src->lineinfo.count = 0;
-	src->lineinfo.entries = NULL;
 
 	return src;
 }
@@ -55,18 +59,9 @@ uc_source_new_buffer(const char *name, char *buf, size_t len)
 	if (!fp)
 		return NULL;
 
-	src = xalloc(ALIGN(sizeof(*src)) + strlen(name) + 1);
-
-	src->header.type = UC_SOURCE;
-	src->header.refcount = 1;
-
+	src = uc_source_alloc(name);
 	src->fp = fp;
 	src->buffer = buf;
-	src->filename = strcpy((char *)src + ALIGN(sizeof(*src)), name);
-	src->runpath = src->filename;
-
-	src->lineinfo.count = 0;
-	src->lineinfo.entries = NULL;
 
 	return src;
 }
@@ -107,6 +102,30 @@ uc_source_get_line(uc_source_t *source, size_t *offset)
 	}
 
 	return 0;
+}
+
+static void
+uc_source_state_clear(uc_source_t *source)
+{
+	size_t i;
+
+	for (i = 0; i < source->exports.count; i++)
+		ucv_put(source->exports.entries[i]);
+
+	uc_vector_clear(&source->exports);
+	uc_vector_clear(&source->lineinfo);
+}
+
+void
+uc_source_free(uc_source_t *source)
+{
+	if (source->runpath != source->filename)
+		free(source->runpath);
+
+	uc_source_state_clear(source);
+
+	fclose(source->fp);
+	free(source->buffer);
 }
 
 uc_source_type_t

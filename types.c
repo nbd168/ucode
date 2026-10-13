@@ -24,6 +24,7 @@
 #include "ucode/internal/types.h"
 #include "ucode/internal/vm.h" /* ISA: I_* opcodes */
 #include "ucode/internal/program.h"
+#include "ucode/internal/source.h"
 #include "ucode/internal/chunk.h"
 #include "ucode/internal/json-c-compat.h"
 
@@ -255,7 +256,6 @@ ucv_free(uc_value_t *uv, bool retain)
 	uc_closure_t *closure;
 	uc_program_t *program;
 	uc_upvalref_t *upval;
-	uc_source_t *source;
 	uc_regexp_t *regexp;
 	uc_object_t *object;
 	uc_array_t *array;
@@ -360,18 +360,7 @@ ucv_free(uc_value_t *uv, bool retain)
 		break;
 
 	case UC_SOURCE:
-		source = ucv_as_source(uv);
-
-		if (source->runpath != source->filename)
-			free(source->runpath);
-
-		for (i = 0; i < source->exports.count; i++)
-			ucv_put(source->exports.entries[i]);
-
-		uc_vector_clear(&source->lineinfo);
-		uc_vector_clear(&source->exports);
-		fclose(source->fp);
-		free(source->buffer);
+		uc_source_free(ucv_as_source(uv));
 		break;
 	}
 

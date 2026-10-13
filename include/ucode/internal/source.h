@@ -23,6 +23,8 @@
 #include "ucode/internal/types.h"
 #include "ucode/internal/util.h"
 
+__hidden void uc_source_free(uc_source_t *source);
+
 __hidden uc_source_type_t uc_source_type_test(uc_source_t *source);
 
 __hidden void uc_source_line_next(uc_source_t *source);
