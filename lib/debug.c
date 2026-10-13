@@ -204,8 +204,9 @@ uc_debug_discover_ucv(uc_value_t *uv, struct lh_table *seen)
 		for (i = 0; i < program->sources.count; i++)
 			uc_debug_discover_ucv(&program->sources.entries[i]->header, seen);
 
-		for (i = 0; i < program->exports.count; i++)
-			uc_debug_discover_ucv(&program->exports.entries[i]->header, seen);
+		uc_vector_foreach(&program->instances, instance)
+			for (i = 0; i < instance->exports.count; i++)
+				uc_debug_discover_ucv(&instance->exports.entries[i]->header, seen);
 
 		break;
 

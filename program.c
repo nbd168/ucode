@@ -1044,6 +1044,19 @@ uc_program_entry(uc_program_t *program)
 	return (uc_function_t *)program->functions.prev;
 }
 
+uc_export_instance_t *
+uc_program_instance_get(uc_program_t *program, uc_closure_t *closure, bool create)
+{
+	uc_vector_foreach(&program->instances, instance)
+		if (instance->closure == closure)
+			return instance;
+
+	if (!create)
+		return NULL;
+
+	return uc_vector_push(&program->instances, { .closure = closure });
+}
+
 uc_value_t *
 uc_program_main(uc_vm_t *vm, uc_program_t *prog)
 {

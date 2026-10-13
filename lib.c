@@ -2982,19 +2982,21 @@ uc_require_imports(uc_vm_t *vm, uc_value_t *closure)
 {
 	uc_function_t *fn = ucv_as_closure(closure)->function;
 	uc_source_t *src = uc_program_function_source(fn);
+	uc_export_instance_t *instance =
+		uc_program_instance_get(fn->program, ucv_as_closure(closure), false);
 	uc_value_t *ns = ucv_object_new(vm);
 	size_t i = src->exports.offset;
 
 	uc_vector_foreach(&src->exports, sym) {
-		if (i >= fn->program->exports.count)
+		if (!instance || i >= instance->exports.count)
 			break;
 
 		if (ucv_type(*sym) == UC_STRING)
 			ucv_object_add(ns, ucv_string_get(*sym),
-				ucv_get(&fn->program->exports.entries[i++]->header));
+				ucv_get(&instance->exports.entries[i++]->header));
 		else if (ucv_type(*sym) == UC_NULL)
 			ucv_object_add(ns, "default",
-				ucv_get(&fn->program->exports.entries[i++]->header));
+				ucv_get(&instance->exports.entries[i++]->header));
 	}
 
 	ucv_set_constant(ns, true);

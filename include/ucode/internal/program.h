@@ -41,6 +41,13 @@
 
 __hidden uc_function_t *uc_program_entry(uc_program_t *);
 
+/* prefix of the registry keys under which a VM holds the closures that
+ * uc_vm_execute() runs; the address of the program follows */
+#define UC_PROGRAM_MAIN_KEY "vm.main."
+
+__hidden uc_export_instance_t *uc_program_instance_get(uc_program_t *, uc_closure_t *, bool);
+__hidden void uc_program_instance_free(uc_program_t *, uc_closure_t *, bool);
+
 __hidden uc_function_t *uc_program_function_new(uc_program_t *, const char *, uc_source_t *, size_t);
 __hidden size_t uc_program_function_id(uc_program_t *, uc_function_t *);
 __hidden uc_function_t *uc_program_function_load(uc_program_t *, size_t);

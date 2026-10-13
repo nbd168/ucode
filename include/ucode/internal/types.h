@@ -121,12 +121,30 @@ typedef struct {
 
 uc_declare_vector(uc_sources_t, uc_source_t *);
 
+/* The exports of the modules that a program links statically, as created by
+ * the runs of one closure of its entry function. */
+typedef struct {
+	uc_closure_t *closure;
+	uc_modexports_t exports;
+} uc_export_instance_t;
+
+typedef struct {
+	uc_closure_t *closure;
+	size_t cursor;
+	bool keep;
+} uc_program_run_t;
+
+uc_declare_vector(uc_export_instances_t, uc_export_instance_t);
+uc_declare_vector(uc_program_runs_t, uc_program_run_t);
+
 struct uc_program {
 	uc_value_t header;
 	uc_value_list_t constants;
 	uc_weakref_t functions;
 	uc_sources_t sources;
-	uc_modexports_t exports;
+	uc_export_instances_t instances;
+	uc_program_runs_t runs;
+	uint32_t closure_refs;
 };
 
 
