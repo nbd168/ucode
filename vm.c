@@ -3103,6 +3103,12 @@ uc_vm_insn_dynload(uc_vm_t *vm, uc_vm_insn_t insn)
 	if (!modscope)
 		return;
 
+	if (vm->exception.type != EXCEPTION_NONE) {
+		ucv_put(modscope);
+
+		return;
+	}
+
 	/* If count is zero, we're doing a wildcard import. Shallow copy module
 	 * object, mark it constant and patch into the target upvalue. */
 	if (count == 0) {

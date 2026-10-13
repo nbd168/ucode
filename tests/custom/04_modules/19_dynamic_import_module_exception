@@ -1,0 +1,36 @@
+This testcase verifies that an import of a dynamically loaded module
+whose body raises an exception reports that exception to the importer.
+
+The module is returned with the exports it reached before the
+exception. The import must not resolve its names against these
+exports and report a missing export in place of the original error.
+
+-- Testcase --
+let fn = loadstring('import { a, b } from "raiser";\nprint(a, b, "\\n");\n', {
+	raw_mode: true,
+	force_dynlink_list: [ 'raiser' ]
+});
+
+try {
+	fn();
+}
+catch (e) {
+	print(e.type, ": ", e.message, "\n");
+}
+-- End --
+
+-- File raiser.uc --
+export const a = 1;
+
+die("raised in module");
+
+export const b = 2;
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+Error: raised in module
+-- End --
