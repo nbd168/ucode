@@ -12,13 +12,20 @@ function run(label, fn) {
 	}
 }
 
+// A named import of a module that the compiler links dynamically reports the
+// exception of the module, not a missing export.
+let named = loadstring('import { b } from "failing";\nreturn b;\n',
+	{ force_dynlink_list: [ "failing" ] });
+
 global.fail = true;
 run("failed load #1", () => keys(import("failing")));
 run("failed load #2", () => keys(import("failing")));
+run("failed named import", named);
 
 global.fail = false;
 run("good load", () => keys(import("failing")));
 run("stored module", () => keys(import("failing")));
+run("good named import", named);
 
 // A statement that only calls import() must not leak in the compiler.
 import("failing");
@@ -40,6 +47,8 @@ export const b = 2;
 -- Expect stdout --
 failed load #1: module body failed
 failed load #2: module body failed
+failed named import: module body failed
 good load: [ "a", "b" ]
 stored module: [ "a", "b" ]
+good named import: 2
 -- End --

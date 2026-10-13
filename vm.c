@@ -3082,8 +3082,11 @@ uc_vm_insn_dynload(uc_vm_t *vm, uc_vm_insn_t insn)
 	modscope = uc_require_library(vm, name, true);
 	ucv_put(name);
 
-	if (!modscope)
+	if (!modscope || vm->exception.type != EXCEPTION_NONE) {
+		ucv_put(modscope);
+
 		return;
+	}
 
 	if (vm->exception.type != EXCEPTION_NONE) {
 		ucv_put(modscope);
