@@ -4126,6 +4126,7 @@ uc_compiler_compile_import(uc_compiler_t *compiler)
 		                                       &compiler->parser->prev);
 
 		uc_compiler_emit_insn(compiler, 0, I_POP);
+		ucv_put(namelist);
 
 		return TK_SCOL;
 	}
