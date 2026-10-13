@@ -3043,6 +3043,7 @@ uc_require_ucode(uc_vm_t *vm, const char *path, uc_value_t *scope, uc_value_t **
 				uc_vm_stack_pop(vm);
 				uc_vm_stack_pop(vm);
 				uc_vm_stack_pop(vm);
+				ucv_put(closure);
 			}
 		}
 	}
