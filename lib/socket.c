@@ -181,7 +181,7 @@ args_get_(uc_vm_t *vm, size_t nargs, int *fdptr, ...)
 	uc_value_t **ptr, *arg;
 	uc_type_t type, t;
 	size_t index = 0;
-	int *sockfd;
+	intptr_t *sockfd;
 	va_list ap;
 	bool opt;
 
@@ -943,9 +943,9 @@ static bool
 uv_to_fileno(uc_vm_t *vm, uc_value_t *val, int *fileno)
 {
 	uc_value_t *fn;
-	int *fdptr;
+	intptr_t *fdptr;
 
-	fdptr = (int *)ucv_resource_dataptr(val, "socket");
+	fdptr = (intptr_t *)ucv_resource_dataptr(val, "socket");
 
 	if (fdptr) {
 		if (*fdptr < 0)
@@ -5078,12 +5078,16 @@ uc_socket_inst_sockname(uc_vm_t *vm, size_t nargs)
 static uc_value_t *
 uc_socket_inst_close(uc_vm_t *vm, size_t nargs)
 {
-	int *sockfd = uc_fn_this("socket");
+	intptr_t *sockfd = uc_fn_this("socket");
+	int fd;
 
 	if (!sockfd || *sockfd == -1)
 		err_return(EBADF, "Invalid socket context");
 
-	if (!xclose(sockfd))
+	fd = *sockfd;
+	*sockfd = -1;
+
+	if (!xclose(&fd))
 		err_return(errno, "close()");
 
 	ok_return(ucv_boolean_new(true));
