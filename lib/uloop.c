@@ -149,8 +149,16 @@ uc_uloop_vm_call(uc_vm_t *vm, bool mcall, size_t nargs)
 {
 	uc_value_t *exh, *val;
 
-	if (uc_vm_call(vm, mcall, nargs) == EXCEPTION_NONE)
+	switch (uc_vm_call(vm, mcall, nargs)) {
+	case EXCEPTION_NONE:
 		return true;
+
+	case EXCEPTION_EXIT:
+		goto error;
+
+	default:
+		break;
+	}
 
 	exh = uc_vm_registry_get(vm, "uloop.ex_handler");
 	if (!ucv_is_callable(exh))
