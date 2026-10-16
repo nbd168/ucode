@@ -308,6 +308,7 @@ bool ucv_array_set(uc_value_t *, size_t, uc_value_t *);
 size_t ucv_array_length(uc_value_t *);
 
 uc_value_t *ucv_object_new(uc_vm_t *);
+uc_value_t *ucv_object_new_size(uc_vm_t *, size_t);
 uc_value_t *ucv_object_get(uc_value_t *, const char *, bool *);
 bool ucv_object_add(uc_value_t *, const char *, uc_value_t *);
 void ucv_object_sort(uc_value_t *, int (*)(const void *, const void *));

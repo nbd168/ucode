@@ -28,6 +28,9 @@
 #include "ucode/internal/chunk.h"
 #include "ucode/internal/json-c-compat.h"
 
+/* initial capacity step of array entry vectors; must be at least 2 */
+#define UC_ARRAY_INIT_SIZE 2
+
 static char *uc_default_search_path[] = { LIB_SEARCH_PATH };
 
 uc_parse_config_t uc_default_parse_config = {
@@ -786,7 +789,7 @@ ucv_array_new_length(uc_vm_t *vm, size_t length)
 
 	/* preallocate memory */
 	if (length)
-		uc_vector_extend(array, length);
+		uc_vector_extend_init(array, UC_ARRAY_INIT_SIZE, length);
 
 	if (vm) {
 		ucv_ref(&vm->values, &array->ref);
@@ -850,7 +853,7 @@ ucv_array_unshift(uc_value_t *uv, uc_value_t *item)
 	if (ucv_type(uv) != UC_ARRAY || ucv_is_constant(uv))
 		return NULL;
 
-	uc_vector_extend(array, 1);
+	uc_vector_extend_init(array, UC_ARRAY_INIT_SIZE, 1);
 
 	for (i = ++array->count; i > 1; i--)
 		array->entries[i - 1] = array->entries[i - 2];
@@ -923,7 +926,7 @@ ucv_array_delete(uc_value_t *uv, size_t offset, size_t count)
 	        &array->entries[offset + count],
 	        (array->count - (offset + count)) * sizeof(array->entries[0]));
 
-	uc_vector_reduce(array, count);
+	uc_vector_reduce_init(array, UC_ARRAY_INIT_SIZE, count);
 	array->count -= count;
 
 	return true;
@@ -938,7 +941,7 @@ ucv_array_set(uc_value_t *uv, size_t index, uc_value_t *item)
 		return false;
 
 	if (index >= array->count) {
-		uc_vector_extend(array, index + 1 - array->count);
+		uc_vector_extend_init(array, UC_ARRAY_INIT_SIZE, index + 1 - array->count);
 		array->count = index + 1;
 	}
 	else {
@@ -992,10 +995,16 @@ ucv_free_object_entry(struct lh_entry *entry)
 uc_value_t *
 ucv_object_new(uc_vm_t *vm)
 {
+	return ucv_object_new_size(vm, 16);
+}
+
+uc_value_t *
+ucv_object_new_size(uc_vm_t *vm, size_t size)
+{
 	struct lh_table *table;
 	uc_object_t *object;
 
-	table = lh_kchar_table_new(16, ucv_free_object_entry);
+	table = lh_kchar_table_new(size, ucv_free_object_entry);
 
 	if (!table) {
 		fprintf(stderr, "Out of memory\n");

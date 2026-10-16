@@ -181,7 +181,7 @@ uc_vector_capacity(size_t init, size_t count)
 }
 
 static inline void
-uc_vector_reduce_(char **base, size_t itemsize, size_t count, size_t remove)
+uc_vector_reduce_init_(char **base, size_t itemsize, size_t init, size_t count, size_t remove)
 {
 	if (*base == NULL)
 		return;
@@ -189,16 +189,16 @@ uc_vector_reduce_(char **base, size_t itemsize, size_t count, size_t remove)
 	if (remove > count)
 		remove = count;
 
-	size_t next_capacity = uc_vector_capacity(UC_VECTOR_INIT_SIZE, count - remove);
+	size_t next_capacity = uc_vector_capacity(init, count - remove);
 
 	if (uc_vector_capacity(next_capacity, count) != next_capacity)
 		*base = (__typeof__(*base))xrealloc(*base, itemsize * next_capacity);
 }
 
 static inline void *
-uc_vector_extend_(char **base, size_t itemsize, size_t count, size_t add)
+uc_vector_extend_init_(char **base, size_t itemsize, size_t init, size_t count, size_t add)
 {
-	size_t curr_capacity = uc_vector_capacity(UC_VECTOR_INIT_SIZE, count);
+	size_t curr_capacity = uc_vector_capacity(init, count);
 
 	if (*base == NULL || count + add >= curr_capacity) {
 		size_t next_capacity = uc_vector_capacity(curr_capacity, count + add);
@@ -212,17 +212,36 @@ uc_vector_extend_(char **base, size_t itemsize, size_t count, size_t add)
 	return *base + itemsize * count;
 }
 
-#define uc_vector_reduce(vec, remove) \
-	uc_vector_reduce_((char **)&(vec)->entries, sizeof((vec)->entries[0]), (vec)->count, (remove))
+static inline void
+uc_vector_reduce_(char **base, size_t itemsize, size_t count, size_t remove)
+{
+	uc_vector_reduce_init_(base, itemsize, UC_VECTOR_INIT_SIZE, count, remove);
+}
 
-#define uc_vector_extend(vec, add) \
-	(__typeof__((vec)->entries + 0)) uc_vector_extend_( \
+static inline void *
+uc_vector_extend_(char **base, size_t itemsize, size_t count, size_t add)
+{
+	return uc_vector_extend_init_(base, itemsize, UC_VECTOR_INIT_SIZE, count, add);
+}
+
+#define uc_vector_reduce_init(vec, init, remove) \
+	uc_vector_reduce_init_((char **)&(vec)->entries, \
+		sizeof((vec)->entries[0]), (init), (vec)->count, (remove))
+
+#define uc_vector_extend_init(vec, init, add) \
+	(__typeof__((vec)->entries + 0)) uc_vector_extend_init_( \
 		(char **)&(vec)->entries, \
 		sizeof((vec)->entries[0]), \
-		(vec)->count, (add))
+		(init), (vec)->count, (add))
+
+#define uc_vector_reduce(vec, remove) \
+	uc_vector_reduce_init((vec), UC_VECTOR_INIT_SIZE, (remove))
+
+#define uc_vector_extend(vec, add) \
+	uc_vector_extend_init((vec), UC_VECTOR_INIT_SIZE, (add))
 
 #define uc_vector_grow(vec) \
-	uc_vector_extend_((char **)&(vec)->entries, sizeof((vec)->entries[0]), (vec)->count, 1)
+	uc_vector_extend((vec), 1)
 
 #define uc_vector_clear(vec) \
 	do { \
