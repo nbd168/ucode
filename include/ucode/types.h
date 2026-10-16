@@ -27,7 +27,22 @@
 #include <ucode/platform.h>
 
 
-/* Value types and generic value header */
+/* Value types and generic value header.
+ *
+ * `mark` is the cycle-detection mark used by stringification and by ubus
+ * blobmsg conversion (and as a reentrancy guard in ucv_free()); `gc_mark`
+ * is the collector's reachability mark.  The two cannot share a bit: a
+ * tostring callback may run the collector while the formatter has marked
+ * the active traversal path, and the mark phase must then descend into
+ * those containers instead of stopping at their marks.
+ *
+ * `gc_mark` reuses the top bit of the former 26 bit refcount field,
+ * reducing the refcount to 25 bits; a refcount high enough to have set that
+ * bit would exceed 33 million, so the change is invisible in practice and
+ * `type`, `mark` and `ext_flag` keep their positions.  The field is
+ * declared so that this top bit is chosen on both endiannesses: little
+ * endian packs bitfields low to high, so gc_mark is declared last, while
+ * big endian packs them high to low, so it is declared first. */
 
 typedef enum uc_type {
 	UC_NULL,
@@ -46,12 +61,23 @@ typedef enum uc_type {
 	UC_SOURCE
 } uc_type_t;
 
+#if __BYTE_ORDER == __LITTLE_ENDIAN
 typedef struct uc_value {
 	uint32_t type:4;
 	uint32_t mark:1;
 	uint32_t ext_flag:1;
-	uint32_t refcount:26;
+	uint32_t refcount:25;
+	uint32_t gc_mark:1;
 } uc_value_t;
+#else
+typedef struct uc_value {
+	uint32_t type:4;
+	uint32_t mark:1;
+	uint32_t ext_flag:1;
+	uint32_t gc_mark:1;
+	uint32_t refcount:25;
+} uc_value_t;
+#endif
 
 
 struct uc_vm;
