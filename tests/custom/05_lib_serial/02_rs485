@@ -8,6 +8,10 @@ ioctl happens.
 import * as serial from 'serial';
 import { open } from 'fs';
 
+// old valgrind versions reject the probed ioctl, skip there
+if (index(getenv('LD_PRELOAD') ?? '', 'vgpreload') >= 0)
+	exit(77);
+
 let f = open('/dev/ptmx', 'r+');
 print(serial.getrs485(f) == null, "\n");
 print(serial.error() != null, "\n");
