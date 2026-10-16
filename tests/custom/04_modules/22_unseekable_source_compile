@@ -1,0 +1,44 @@
+A source file that cannot seek, such as a pipe, is read into a buffer when
+it is opened: the type test, the interpreter line and the error context all
+seek in the source.
+
+-- Testcase --
+import { readlink } from 'fs';
+
+let ucode = readlink('/proc/self/exe');
+
+system(`printf '#!/usr/bin/env ucode\\nprint("script\\\\n");\\nnull.x = 1;\\n' | ${ucode} /dev/stdin 2>&1`);
+system(`printf 'print("loadfile\\\\n");\\n' | ${ucode} -e 'loadfile("/dev/stdin")();' 2>&1`);
+system(`printf 'let = 1;\\n' | ${ucode} -e 'try { loadfile("/dev/stdin"); } catch (e) { print(substr(e.message, 0, index(e.message, "\\n")), "\\n"); }' 2>&1`);
+
+// A precompiled program names its source file for the error context only.
+// The load of the program must not read a source that cannot seek.
+let libs = join(" ", map(REQUIRE_SEARCH_PATH, (path) => `-L '${path}'`));
+
+system(`${ucode} ${libs} -c -o files/reader.uc /dev/stdin < files/reader-source.uc 2>&1`);
+system(`echo data | ${ucode} ${libs} files/reader.uc 2>&1`);
+-- End --
+
+-- File reader-source.uc --
+import { stdin } from "fs";
+
+print("input: ", stdin.read("line"));
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+Type error: attempt to set property on null value
+In /dev/stdin, line 3, byte 10:
+
+ `null.x = 1;`
+  ~~~~~~~~~^~
+
+
+script
+loadfile
+Unable to compile source file '/dev/stdin':
+input: data
+-- End --

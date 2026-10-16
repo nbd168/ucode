@@ -157,6 +157,7 @@ ucv_gc_mark(uc_value_t *uv)
 	uc_object_t *object;
 	uc_array_t *array;
 	uc_resource_type_t *restype;
+	uc_export_instance_t *instance;
 	uc_program_t *program;
 	uc_value_t **values;
 	struct lh_entry *entry;
@@ -202,6 +203,13 @@ ucv_gc_mark(uc_value_t *uv)
 		for (i = 0; i < function->nupvals; i++)
 			ucv_gc_mark(&closure->upvals[i]->header);
 
+		/* The exports are values of the VM of this closure. A program can
+		 * hold instances of other VMs, so they are not marked from there. */
+		instance = uc_program_instance_get(function->program, closure, false);
+
+		for (i = 0; instance && i < instance->exports.count; i++)
+			ucv_gc_mark(&instance->exports.entries[i]->header);
+
 		ucv_gc_mark(&function->program->header);
 
 		break;
@@ -239,14 +247,31 @@ ucv_gc_mark(uc_value_t *uv)
 		for (i = 0; i < program->sources.count; i++)
 			ucv_gc_mark(&program->sources.entries[i]->header);
 
-		for (i = 0; i < program->exports.count; i++)
-			ucv_gc_mark(&program->exports.entries[i]->header);
-
 		break;
 
 	default:
 		break;
 	}
+}
+
+void
+uc_program_instance_free(uc_program_t *program, uc_closure_t *closure, bool retain)
+{
+	uc_export_instance_t *instance = uc_program_instance_get(program, closure, false);
+	uc_modexports_t exports;
+	size_t i;
+
+	if (!instance)
+		return;
+
+	/* the release of an export can free another closure of the program */
+	exports = instance->exports;
+	*instance = program->instances.entries[--program->instances.count];
+
+	for (i = 0; i < exports.count; i++)
+		ucv_put_value(&exports.entries[i]->header, retain);
+
+	uc_vector_clear(&exports);
 }
 
 void
@@ -301,10 +326,13 @@ ucv_free(uc_value_t *uv, bool retain)
 		function = closure->function;
 		ref = &closure->ref;
 
+		uc_program_instance_free(function->program, closure, retain);
+
 		for (i = 0; i < function->nupvals; i++)
 			if (closure->upvals[i])
 				ucv_put_value(&closure->upvals[i]->header, retain);
 
+		function->program->closure_refs--;
 		ucv_put_value(&function->program->header, retain);
 		break;
 
@@ -352,11 +380,10 @@ ucv_free(uc_value_t *uv, bool retain)
 		for (i = 0; i < program->sources.count; i++)
 			ucv_put_value(&program->sources.entries[i]->header, retain);
 
-		for (i = 0; i < program->exports.count; i++)
-			ucv_put_value(&program->exports.entries[i]->header, retain);
-
+		/* each instance belongs to a closure, which holds the program */
 		uc_vector_clear(&program->sources);
-		uc_vector_clear(&program->exports);
+		uc_vector_clear(&program->instances);
+		uc_vector_clear(&program->runs);
 		break;
 
 	case UC_SOURCE:
@@ -1231,6 +1258,7 @@ ucv_closure_new(uc_vm_t *vm, uc_function_t *function, bool arrow_fn)
 	}
 
 	uc_program_get(function->program);
+	function->program->closure_refs++;
 
 	return &closure->header;
 }
@@ -3028,6 +3056,33 @@ ucv_key_rawdelete(uc_vm_t *vm, uc_value_t *scope, uc_value_t *key)
 	return ucv_object_del_key(vm, scope, key);
 }
 
+/* The registry holds the closure that uc_vm_execute() runs, so that a later
+ * execution of the program finds the module instances of the earlier one.
+ * Only the caller of uc_vm_execute() can tell that the program is still in
+ * use, and it holds a program reference that is no closure. Without such a
+ * reference no later execution can follow. */
+static bool
+ucv_gc_main_release(uc_vm_t *vm)
+{
+	uc_program_t *program;
+
+	ucv_object_foreach(vm->registry, key, val) {
+		if (strncmp(key, UC_PROGRAM_MAIN_KEY, strlen(UC_PROGRAM_MAIN_KEY)))
+			continue;
+
+		program = ucv_as_closure(val)->function->program;
+
+		if (program->header.refcount > program->closure_refs)
+			continue;
+
+		ucv_object_delete(vm->registry, key);
+
+		return true;
+	}
+
+	return false;
+}
+
 static void
 ucv_gc_common(uc_vm_t *vm, bool final)
 {
@@ -3042,6 +3097,9 @@ ucv_gc_common(uc_vm_t *vm, bool final)
 		return;
 
 	if (!final) {
+		while (vm->registry && ucv_gc_main_release(vm))
+			;
+
 		/* mark reachable objects */
 		ucv_gc_mark(vm->globals);
 		ucv_gc_mark(vm->registry);

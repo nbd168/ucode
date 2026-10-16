@@ -30,12 +30,19 @@
 typedef enum {
 	UC_SOURCE_TYPE_PLAIN = 0,
 	UC_SOURCE_TYPE_PRECOMPILED = 1,
+	UC_SOURCE_TYPE_UNAVAILABLE = 2,
 } uc_source_type_t;
 
 /* Create a source from a file or an in-memory buffer. The buffer variant
- * takes ownership of `buf` (it is freed when the source is released). */
+ * takes ownership of `buf` (it is freed when the source is released). A
+ * file that cannot seek, such as a pipe, is read into a buffer. */
 uc_source_t *uc_source_new_file(const char *path);
 uc_source_t *uc_source_new_buffer(const char *name, char *buf, size_t len);
+
+/* Create a buffer source from the remaining content of `fp`, which is read to
+ * its end. The caller keeps `fp` and closes it. An empty input results in a
+ * buffer holding a single newline. */
+uc_source_t *uc_source_new_slurp(const char *name, FILE *fp);
 
 /* Fetch the line containing the given byte offset; *offset is set to the
  * offset of the first character of that line. Returns the 1-based line number. */

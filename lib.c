@@ -162,60 +162,40 @@ static bool
 format_context_range(uc_stringbuf_t *buf, uc_source_t *src, size_t off,
                      size_t startoff, size_t endoff, bool compact)
 {
-	size_t len, rlen, lpos, eoff, sbegin, send, shift;
+	size_t len, lpos, eoff, sbegin, send, shift;
 	bool truncated;
 	char line[256];
-	long srcpos;
 	int eline;
 
-	srcpos = ftell(src->fp);
+	eline = uc_source_read_line(src, off, line, sizeof(line), &lpos, &truncated);
 
-	if (srcpos == -1)
+	if (!eline)
 		return false;
 
-	fseek(src->fp, 0, SEEK_SET);
+	if (compact)
+		ucv_stringbuf_printf(buf, "\033[2;40;97m%17s  %s",
+			source_filename(src, eline),
+			truncated ? "..." : "");
+	else
+		ucv_stringbuf_printf(buf, "\n `%s",
+			truncated ? "..." : "");
 
-	truncated = false;
-	eline = 1;
-	rlen = 0;
+	/* the index of the failing byte within the line and the columns gained by
+	 * prefixing an overlong line with "..." */
+	eoff = off - lpos;
+	shift = truncated ? 3 : 0;
 
-	while (fgets(line, sizeof(line), src->fp)) {
-		len = strlen(line);
-		rlen += len;
+	sbegin = send = eoff;
 
-		if (rlen >= off) {
-			if (compact)
-				ucv_stringbuf_printf(buf, "\033[2;40;97m%17s  %s",
-					source_filename(src, eline),
-					truncated ? "..." : "");
-			else
-				ucv_stringbuf_printf(buf, "\n `%s",
-					truncated ? "..." : "");
+	/* clip the statement's extent to the part of it on this line */
+	len = strlen(line);
 
-			/* the source offset this line starts at, the index of the failing
-			 * byte within it and the columns gained by prefixing an overlong
-			 * line with "..." */
-			lpos = rlen - len;
-			eoff = off - lpos;
-			shift = truncated ? 3 : 0;
-
-			sbegin = send = eoff;
-
-			/* clip the statement's extent to the part of it on this line */
-			if (endoff > startoff && endoff > lpos && startoff < lpos + len) {
-				sbegin = startoff > lpos ? startoff - lpos : 0;
-				send = endoff < lpos + len ? endoff - lpos : len;
-			}
-
-			format_context_line(buf, line, eoff + shift, sbegin + shift, send + shift, compact);
-			break;
-		}
-
-		truncated = (len > 0 && line[len-1] != '\n');
-		eline += !truncated;
+	if (endoff > startoff && endoff > lpos && startoff < lpos + len) {
+		sbegin = startoff > lpos ? startoff - lpos : 0;
+		send = endoff < lpos + len ? endoff - lpos : len;
 	}
 
-	fseek(src->fp, srcpos, SEEK_SET);
+	format_context_line(buf, line, eoff + shift, sbegin + shift, send + shift, compact);
 
 	return true;
 }
@@ -3002,19 +2982,30 @@ uc_require_imports(uc_vm_t *vm, uc_value_t *closure)
 {
 	uc_function_t *fn = ucv_as_closure(closure)->function;
 	uc_source_t *src = uc_program_function_source(fn);
+	uc_export_instance_t *instance =
+		uc_program_instance_get(fn->program, ucv_as_closure(closure), false);
 	uc_value_t *ns = ucv_object_new(vm);
-	size_t i = src->exports.offset;
+	size_t own = 0, i = 0;
+
+	/* The module exports its own symbols last, after those of the modules
+	 * that it links. A precompiled module does not record their offset. */
+	uc_vector_foreach(&src->exports, sym)
+		if (ucv_type(*sym) == UC_STRING || ucv_type(*sym) == UC_NULL)
+			own++;
+
+	if (instance && instance->exports.count > own)
+		i = instance->exports.count - own;
 
 	uc_vector_foreach(&src->exports, sym) {
-		if (i >= fn->program->exports.count)
+		if (!instance || i >= instance->exports.count)
 			break;
 
 		if (ucv_type(*sym) == UC_STRING)
 			ucv_object_add(ns, ucv_string_get(*sym),
-				ucv_get(&fn->program->exports.entries[i++]->header));
+				ucv_get(&instance->exports.entries[i++]->header));
 		else if (ucv_type(*sym) == UC_NULL)
 			ucv_object_add(ns, "default",
-				ucv_get(&fn->program->exports.entries[i++]->header));
+				ucv_get(&instance->exports.entries[i++]->header));
 	}
 
 	ucv_set_constant(ns, true);
@@ -3040,6 +3031,10 @@ uc_require_ucode(uc_vm_t *vm, const char *path, uc_value_t *scope, uc_value_t **
 
 	closure = uc_loadfile(vm, 1);
 
+	/* the module body runs with this configuration; a file that it loads is
+	 * not a module */
+	config.compile_module = prev_config->compile_module;
+
 	ucv_put(uc_vm_stack_pop(vm));
 
 	if (closure) {
@@ -3059,6 +3054,7 @@ uc_require_ucode(uc_vm_t *vm, const char *path, uc_value_t *scope, uc_value_t **
 				uc_vm_stack_pop(vm);
 				uc_vm_stack_pop(vm);
 				uc_vm_stack_pop(vm);
+				ucv_put(closure);
 			}
 		}
 	}
@@ -3114,7 +3110,7 @@ uc_require_path(uc_vm_t *vm, const char *path_template, const char *name,
 	else if (!strcmp(p + 1, ".uc"))
 		rv = uc_require_ucode(vm, buf->buf, NULL, res, true, module_mode);
 
-	if (rv)
+	if (rv && vm->exception.type == EXCEPTION_NONE)
 		ucv_object_add(modtable, name, ucv_get(*res));
 
 out:
@@ -5863,7 +5859,7 @@ uc_compile_parse_config(uc_parse_config_t *config, uc_value_t *spec)
 }
 
 static uc_value_t *
-uc_load_common(uc_vm_t *vm, size_t nargs, uc_source_t *source)
+uc_load_common(uc_vm_t *vm, size_t nargs, uc_source_t *source, bool is_file)
 {
 	uc_parse_config_t conf = *vm->config;
 	uc_program_t *program;
@@ -5886,7 +5882,7 @@ uc_load_common(uc_vm_t *vm, size_t nargs, uc_source_t *source)
 	if (!closure) {
 		uc_error_message_indent(&err);
 
-		if (source->buffer)
+		if (!is_file)
 			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME,
 				"Unable to compile source string:\n\n%s", err);
 		else
@@ -5967,7 +5963,7 @@ uc_loadstring(uc_vm_t *vm, size_t nargs)
 		return NULL;
 	}
 
-	return uc_load_common(vm, nargs, source);
+	return uc_load_common(vm, nargs, source, false);
 }
 
 /**
@@ -5997,37 +5993,22 @@ static uc_value_t *
 uc_loadfile(uc_vm_t *vm, size_t nargs)
 {
 	uc_value_t *path = uc_fn_arg(0);
-	uc_source_t *source = NULL;
-	char *resolved;
+	uc_source_t *source;
 
 	if (ucv_type(path) != UC_STRING)
 		return NULL;
 
-	resolved = realpath(ucv_string_get(path), NULL);
-
-	if (resolved && lh_table_lookup_ex(vm->sources, (const void *)resolved, (void **)&source)) {
-		source = uc_source_get(source);
-	}
+	source = uc_source_new_file(ucv_string_get(path));
 
 	if (!source) {
-		source = uc_source_new_file(ucv_string_get(path));
+		uc_vm_raise_exception(vm, EXCEPTION_RUNTIME,
+			"Unable to open source file %s: %s",
+			ucv_string_get(path), strerror(errno));
 
-		if (!source) {
-			free(resolved);
-			uc_vm_raise_exception(vm, EXCEPTION_RUNTIME,
-				"Unable to open source file %s: %s",
-				ucv_string_get(path), strerror(errno));
-
-			return NULL;
-		}
-
-		if (resolved)
-			lh_table_insert(vm->sources, xstrdup(resolved), uc_source_get(source));
+		return NULL;
 	}
 
-	free(resolved);
-
-	return uc_load_common(vm, nargs, source);
+	return uc_load_common(vm, nargs, source, true);
 }
 
 /**

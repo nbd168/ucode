@@ -269,8 +269,6 @@ void uc_vm_init(uc_vm_t *vm, uc_parse_config_t *config)
 
 	vm->open_upvals = NULL;
 
-	vm->sources = lh_kchar_table_new(16, NULL);
-
 	vm->values.prev = &vm->values;
 	vm->values.next = &vm->values;
 
@@ -326,23 +324,6 @@ void uc_vm_free(uc_vm_t *vm)
 	printbuf_free(vm->strbuf);
 
 	ucv_freeall(vm);
-
-	/* Release source cache entries after freeall so that all program refs
-	 * to sources are already gone and the cache refs are the last ones. */
-	if (vm->sources) {
-		struct lh_entry *entry, *next;
-
-		entry = vm->sources->head;
-
-		while (entry) {
-			next = entry->next;
-			ucv_put((uc_value_t *)lh_entry_v(entry));
-			free((char *)lh_entry_k(entry));
-			entry = next;
-		}
-
-		lh_table_free(vm->sources);
-	}
 
 	for (i = 0; i < vm->restypes.count; i++)
 		free(vm->restypes.entries[i]);
@@ -650,6 +631,70 @@ uc_vm_call_native(uc_vm_t *vm, uc_value_t *ctx, uc_cfunction_t *fptr, bool mcall
 		ucv_put(res);
 }
 
+/* The exports of the modules that a program links statically belong to the
+ * closure of its entry function that runs them, and live as long as that
+ * closure. An exported function holds the program, so exports that the program
+ * owned itself would keep the program alive. */
+static bool
+uc_vm_closure_is_entry(uc_closure_t *closure)
+{
+	uc_function_t *function = closure->function;
+
+	return function->program->functions.prev == &function->progref;
+}
+
+static void
+uc_vm_run_begin(uc_closure_t *closure, bool keep)
+{
+	if (uc_vm_closure_is_entry(closure))
+		uc_vector_push(&closure->function->program->runs, { .closure = closure, .keep = keep });
+}
+
+static void
+uc_vm_run_end(uc_closure_t *closure)
+{
+	if (uc_vm_closure_is_entry(closure))
+		uc_vector_pop(&closure->function->program->runs);
+}
+
+typedef char uc_vm_main_key_t[sizeof(UC_PROGRAM_MAIN_KEY) + sizeof("0x") + 2 * sizeof(void *)];
+
+static const char *
+uc_vm_main_key(uc_program_t *program, uc_vm_main_key_t key)
+{
+	snprintf(key, sizeof(uc_vm_main_key_t), UC_PROGRAM_MAIN_KEY "%p", (void *)program);
+
+	return key;
+}
+
+/* The caller of uc_vm_execute() holds the program only. Keep the closure that
+ * runs in the registry once it has module instances, so that a later execution
+ * in this VM runs the same closure and finds them. */
+static void
+uc_vm_main_keep(uc_vm_t *vm, uc_program_t *program, uc_program_run_t *run)
+{
+	uc_vm_main_key_t key;
+
+	if (!run->keep)
+		return;
+
+	run->keep = false;
+	uc_vm_registry_set(vm, uc_vm_main_key(program, key), ucv_get(&run->closure->header));
+}
+
+static uc_modexports_t *
+uc_vm_run_exports(uc_program_t *program, uc_program_run_t *run, bool create)
+{
+	uc_export_instance_t *instance;
+
+	if (!run)
+		return NULL;
+
+	instance = uc_program_instance_get(program, run->closure, create);
+
+	return instance ? &instance->exports : NULL;
+}
+
 /* Replaces the current call frame by an invocation frame for the given closure,
  * reusing the stack slots formerly occupied by the current frame.
  *
@@ -708,6 +753,11 @@ uc_vm_frame_reinit(uc_vm_t *vm, uc_closure_t *closure, uc_value_t *ctx,
 	 * occupies the slot below the invoked function value. the tco counter records
 	 * that this frame replaced the tail calling one, so stack traces can indicate
 	 * the collapsed frames */
+	if (frame->closure)
+		uc_vm_run_end(frame->closure);
+
+	uc_vm_run_begin(closure, false);
+
 	frame->stackframe = blockdst + (mcall ? 1 : 0);
 	frame->cfunction = NULL;
 	frame->closure = closure;
@@ -731,9 +781,9 @@ uc_vm_frame_reinit(uc_vm_t *vm, uc_closure_t *closure, uc_value_t *ctx,
 
 /* Returns the expression invoked by the call that the instruction the VM is
  * about to execute belongs to, or NULL if it cannot be determined. The result
- * is meant for error messages describing a failed call, and stays valid until
- * the next call. */
-static const char *
+ * is meant for error messages describing a failed call, and must be
+ * released using free(). */
+static char *
 uc_vm_callee_expr(uc_vm_t *vm)
 {
 	uc_function_t *function;
@@ -871,7 +921,7 @@ uc_vm_call_function(uc_vm_t *vm, uc_value_t *ctx, uc_value_t *fno, bool mcall,
 		 * both the offending expression and the value that was not a function;
 		 * a NULL vm skips __tostring__ dispatch, so describing the value has no
 		 * side effects */
-		const char *callee = uc_vm_callee_expr(vm);
+		char *callee = uc_vm_callee_expr(vm);
 		char *hint = ucv_to_jsonstring(NULL, fno);
 		size_t hlen = strlen(hint);
 
@@ -883,6 +933,7 @@ uc_vm_call_function(uc_vm_t *vm, uc_value_t *ctx, uc_value_t *fno, bool mcall,
 		else
 			uc_vm_raise_exception(vm, EXCEPTION_TYPE, "left-hand side is not a function, got %s instead", hint);
 
+		free(callee);
 		free(hint);
 		ucv_put(ctx);
 		ucv_put(fno);
@@ -943,6 +994,8 @@ uc_vm_call_function(uc_vm_t *vm, uc_value_t *ctx, uc_value_t *fno, bool mcall,
 		.mcall = mcall,
 		.strict = function->strict
 	});
+
+	uc_vm_run_begin(closure, false);
 
 	if (vm->trace)
 		uc_vm_frame_dump(vm, frame);
@@ -3015,12 +3068,24 @@ uc_vm_insn_delete(uc_vm_t *vm, uc_vm_insn_t insn)
 	ucv_put(v);
 }
 
+/* a closure that runs again holds the binding of its previous run */
+static void
+uc_vm_import_bind(uc_closure_t *closure, size_t slot, uc_upvalref_t *ref)
+{
+	if (closure->upvals[slot])
+		ucv_put(&closure->upvals[slot]->header);
+
+	closure->upvals[slot] = ref;
+}
+
 static void
 uc_vm_insn_import(uc_vm_t *vm, uc_vm_insn_t insn)
 {
 	uc_callframe_t *frame = uc_vm_current_frame(vm);
 	uc_program_t *prog = uc_vm_current_program(vm);
-	uint16_t from = vm->arg.u32 & 0xffff;
+	uc_modexports_t *exports = uc_vm_run_exports(prog, uc_vector_last(&prog->runs), false);
+	size_t count = exports ? exports->count : 0;
+	size_t from = vm->arg.u32 & 0xffff;
 	uint16_t to = vm->arg.u32 >> 16;
 	uc_value_t *name, *modobj;
 	uint32_t cidx;
@@ -3033,10 +3098,10 @@ uc_vm_insn_import(uc_vm_t *vm, uc_vm_insn_t insn)
 		/* instruction is followed by u16 containing the offset of the
 		 * first module export and `from` times u32 values containing
 		 * the constant indexes of the names */
-		for (from = frame->ip[0] * 0x100 + frame->ip[1], frame->ip += 2;
-		     from < prog->exports.count && to > 0;
-		     from++, to--) {
+		from = frame->ip[0] * 0x100 + frame->ip[1];
 
+		/* read all name operands, also those of a missing export */
+		for (frame->ip += 2; to > 0; from++, to--) {
 			cidx = (
 				frame->ip[0] * 0x1000000UL +
 				frame->ip[1] * 0x10000UL +
@@ -3046,11 +3111,14 @@ uc_vm_insn_import(uc_vm_t *vm, uc_vm_insn_t insn)
 
 			frame->ip += 4;
 
+			if (from >= count || !exports->entries[from])
+				continue;
+
 			name = uc_program_get_constant(uc_vm_current_program(vm), cidx);
 
-			if (ucv_type(name) == UC_STRING && prog->exports.entries[from])
+			if (ucv_type(name) == UC_STRING)
 				ucv_object_add(modobj, ucv_string_get(name),
-					ucv_get(&prog->exports.entries[from]->header));
+					ucv_get(&exports->entries[from]->header));
 
 			ucv_put(name);
 		}
@@ -3061,15 +3129,15 @@ uc_vm_insn_import(uc_vm_t *vm, uc_vm_insn_t insn)
 	}
 
 	/* module export available, patch into upvalue */
-	else if (from < prog->exports.count && prog->exports.entries[from]) {
-		frame->closure->upvals[to] = prog->exports.entries[from];
-		ucv_get(&prog->exports.entries[from]->header);
+	else if (from < count && exports->entries[from]) {
+		ucv_get(&exports->entries[from]->header);
+		uc_vm_import_bind(frame->closure, to, exports->entries[from]);
 	}
 
 	/* module export missing, e.g. due to premature return in module,
 	 * patch up dummy upvalue ref with `null` value */
 	else {
-		frame->closure->upvals[to] = (uc_upvalref_t *)ucv_upvalref_new(0);
+		uc_vm_import_bind(frame->closure, to, (uc_upvalref_t *)ucv_upvalref_new(0));
 		frame->closure->upvals[to]->closed = true;
 	}
 }
@@ -3079,9 +3147,23 @@ uc_vm_insn_export(uc_vm_t *vm, uc_vm_insn_t insn)
 {
 	uc_callframe_t *frame = uc_vm_current_frame(vm);
 	uc_program_t *prog = uc_vm_current_program(vm);
-	uc_upvalref_t *ref = uc_vm_capture_upval(vm, frame->stackframe + vm->arg.u32);
+	uc_program_run_t *run = uc_vector_last(&prog->runs);
+	uc_modexports_t *exports = uc_vm_run_exports(prog, run, true);
+	uc_upvalref_t *ref;
 
-	uc_vector_push(&prog->exports, ref);
+	if (!exports)
+		return;
+
+	uc_vm_main_keep(vm, prog, run);
+
+	/* A later run of the closure runs the module bodies again. Its imports
+	 * resolve to the instances of the first run, which stay in place. */
+	if (run->cursor++ < exports->count)
+		return;
+
+	ref = uc_vm_capture_upval(vm, frame->stackframe + vm->arg.u32);
+
+	uc_vector_push(exports, ref);
 	ucv_get(&ref->header);
 }
 
@@ -3100,8 +3182,11 @@ uc_vm_insn_dynload(uc_vm_t *vm, uc_vm_insn_t insn)
 	modscope = uc_require_library(vm, name, true);
 	ucv_put(name);
 
-	if (!modscope)
+	if (!modscope || vm->exception.type != EXCEPTION_NONE) {
+		ucv_put(modscope);
+
 		return;
+	}
 
 	if (vm->exception.type != EXCEPTION_NONE) {
 		ucv_put(modscope);
@@ -3154,7 +3239,7 @@ uc_vm_insn_dynload(uc_vm_t *vm, uc_vm_insn_t insn)
 
 			ucv_put(name);
 
-			frame->closure->upvals[to] = (uc_upvalref_t *)ucv_upvalref_new(0);
+			uc_vm_import_bind(frame->closure, to, (uc_upvalref_t *)ucv_upvalref_new(0));
 			frame->closure->upvals[to]->closed = true;
 			frame->closure->upvals[to]->value = ucv_get(export);
 
@@ -3216,8 +3301,10 @@ uc_vm_callframe_pop(uc_vm_t *vm)
 		ucv_put(uc_vm_stack_pop(vm));
 
 	/* release function */
-	if (frame->closure)
+	if (frame->closure) {
+		uc_vm_run_end(frame->closure);
 		ucv_put(&frame->closure->header);
+	}
 
 	if (frame->cfunction)
 		ucv_put(&frame->cfunction->header);
@@ -3623,6 +3710,12 @@ exception:
 			}
 		}
 
+		/* the compiler emits the exports of a module as one block, do not run
+		 * signal handlers inside of it, as an exception raised by one would
+		 * leave a part of the module instance behind */
+		if (insn == I_EXPORT && frame->ip[0] == I_EXPORT)
+			continue;
+
 		/* run handler for signal(s) delivered during previous instruction */
 		if (uc_vm_signal_dispatch(vm) != EXCEPTION_NONE)
 			goto exception;
@@ -3640,7 +3733,9 @@ exception:
 uc_vm_status_t
 uc_vm_execute(uc_vm_t *vm, uc_program_t *program, uc_value_t **retval)
 {
-	uc_closure_t *closure = ucv_as_closure(uc_program_main(vm, program));
+	uc_vm_main_key_t key;
+	uc_value_t *kept = uc_vm_registry_get(vm, uc_vm_main_key(program, key));
+	uc_closure_t *closure = ucv_as_closure(kept ? ucv_get(kept) : uc_program_main(vm, program));
 	uc_function_t *fn = closure->function;
 	uc_vm_status_t status;
 	uc_callframe_t *frame;
@@ -3655,6 +3750,8 @@ uc_vm_execute(uc_vm_t *vm, uc_program_t *program, uc_value_t **retval)
 		.ip = fn->chunk.entries,
 		.strict = fn->strict
 	});
+
+	uc_vm_run_begin(closure, !kept);
 
 	if (vm->trace) {
 		buf = xprintbuf_new();

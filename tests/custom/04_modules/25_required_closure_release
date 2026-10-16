@@ -1,0 +1,29 @@
+include() and render() release the main function of the file that they ran.
+Without the collector, a loop over them must not add live values.
+
+-- Testcase --
+function count(label, fn) {
+	let live = gc("count");
+
+	for (let i = 0; i < 100; i++)
+		fn();
+
+	print(label, ": ", gc("count") - live, "\n");
+}
+
+count("include", () => include("files/script.uc"));
+count("render", () => render("files/script.uc"));
+-- End --
+
+-- File script.uc --
+let a = 1;
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+include: 0
+render: 0
+-- End --

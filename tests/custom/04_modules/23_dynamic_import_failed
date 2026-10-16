@@ -1,0 +1,54 @@
+A dynamically loaded module whose body raises an exception is not stored in
+the module table. A later load runs the module again and does not return
+the incomplete namespace of the failed load.
+
+-- Testcase --
+function run(label, fn) {
+	try {
+		print(label, ": ", fn(), "\n");
+	}
+	catch (e) {
+		print(label, ": ", e.message, "\n");
+	}
+}
+
+// A named import of a module that the compiler links dynamically reports the
+// exception of the module, not a missing export.
+let named = loadstring('import { b } from "failing";\nreturn b;\n',
+	{ force_dynlink_list: [ "failing" ] });
+
+global.fail = true;
+run("failed load #1", () => keys(import("failing")));
+run("failed load #2", () => keys(import("failing")));
+run("failed named import", named);
+
+global.fail = false;
+run("good load", () => keys(import("failing")));
+run("stored module", () => keys(import("failing")));
+run("good named import", named);
+
+// A statement that only calls import() must not leak in the compiler.
+import("failing");
+-- End --
+
+-- File failing.uc --
+export const a = 1;
+
+if (global.fail)
+	die("module body failed");
+
+export const b = 2;
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+failed load #1: module body failed
+failed load #2: module body failed
+failed named import: module body failed
+good load: [ "a", "b" ]
+stored module: [ "a", "b" ]
+good named import: 2
+-- End --

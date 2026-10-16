@@ -83,6 +83,7 @@ extern bool debug_remote_has_active_connection(void);
 #include "ucode/module.h"
 #include "ucode/internal/lib.h"
 #include "ucode/internal/program.h"
+#include "ucode/internal/source.h"
 #include "ucode/internal/chunk.h"
 #include "ucode/internal/vm.h"
 #include "ucode/internal/platform.h"
@@ -203,8 +204,9 @@ uc_debug_discover_ucv(uc_value_t *uv, struct lh_table *seen)
 		for (i = 0; i < program->sources.count; i++)
 			uc_debug_discover_ucv(&program->sources.entries[i]->header, seen);
 
-		for (i = 0; i < program->exports.count; i++)
-			uc_debug_discover_ucv(&program->exports.entries[i]->header, seen);
+		uc_vector_foreach(&program->instances, instance)
+			for (i = 0; i < instance->exports.count; i++)
+				uc_debug_discover_ucv(&instance->exports.entries[i]->header, seen);
 
 		break;
 
@@ -4955,6 +4957,8 @@ proto_cmd_source(uc_vm_t *vm, debug_breakpoint_t *dbk, uc_value_t *payload, int 
 	uc_value_t *filev = ucv_object_get(payload, "file", NULL);
 	location_t loc = { 0 };
 	uc_value_t *obj;
+	char *text = NULL;
+	size_t len = 0;
 
 	if (ucv_type(filev) != UC_STRING) {
 		send_error(fd, vm, "Usage: SOURCE {\"file\":\"...\"}");
@@ -4968,22 +4972,16 @@ proto_cmd_source(uc_vm_t *vm, debug_breakpoint_t *dbk, uc_value_t *payload, int 
 	obj = ucv_object_new(vm);
 	ucv_object_add(obj, "file", ucv_get(filev));
 
-	if (!lookup_source(vm, &loc)) {
+	if (lookup_source(vm, &loc))
+		text = uc_source_read_content(loc.source, &len);
+
+	if (!text) {
 		ucv_object_add(obj, "text", NULL);
 		ucv_object_add(obj, "error", ucv_string_new("source not available on server"));
 	}
 	else {
-		uc_stringbuf_t text = { 0 };
-		char buf[4096];
-		size_t n;
-
-		fseeko(loc.source->fp, 0, SEEK_SET);
-
-		while ((n = fread(buf, 1, sizeof(buf), loc.source->fp)) > 0)
-			printbuf_memappend_fast((&text), buf, (int)n);
-
-		ucv_object_add(obj, "text", ucv_string_new_length(text.buf, text.bpos));
-		free(text.buf);
+		ucv_object_add(obj, "text", ucv_string_new_length(text, len));
+		free(text);
 	}
 
 	debug_proto_write(fd, vm, "SOURCE", obj);

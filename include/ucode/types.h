@@ -227,7 +227,7 @@ struct uc_vm {
 	uc_parse_config_t *config;
 	uc_value_t *globals;
 	uc_value_t *registry;
-	struct lh_table *sources;
+	void *reserved;
 	uc_weakref_t values;
 	uc_resource_types_t restypes;
 	uc_breakpoints_t breakpoints;

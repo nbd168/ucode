@@ -1,0 +1,88 @@
+The expression invoked by a failing call is recovered from the source and
+named in the error message, regardless of how it is formatted.
+
+
+1. Whitespace and line breaks within the invoked expression are dropped, while
+   whitespace within subscripts is kept.
+
+-- Testcase --
+{%
+	let o = { a: { "x y": [ { f: 1 } ] } };
+
+	try {
+		o
+			.a
+			[ "x y" ] [0]
+			.f ( 1,
+				2 );
+	}
+	catch (e) {
+		print(e.message, "\n");
+	}
+
+	try {
+		o . a [ "x y" ][0] . f();
+	}
+	catch (e) {
+		print(e.message, "\n");
+	}
+%}
+-- End --
+
+-- Expect stdout --
+`o.a[ "x y" ][0].f` is not a function, got 1 instead
+`o.a[ "x y" ][0].f` is not a function, got 1 instead
+-- End --
+
+
+2. An invoked expression longer than 64 characters shows its tail.
+
+-- Testcase --
+{%
+	let o = { aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: { b: 1 } };
+
+	try {
+		o.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b();
+	}
+	catch (e) {
+		print(e.message, "\n");
+	}
+%}
+-- End --
+
+-- Expect stdout --
+`...aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.b` is not a function, got 1 instead
+-- End --
+
+
+3. Arguments of any width up to a few kilobytes do not prevent the expression
+   from being recovered, while wider ones do.
+
+-- Testcase --
+{%
+	function args(n) {
+		let rv = [];
+
+		for (let i = 0; i < n; i++)
+			push(rv, '"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"');
+
+		return join(",\n\t", rv);
+	}
+
+	for (let n in [ 2, 20, 60, 120 ]) {
+		try {
+			loadstring(`{% let o = { f: { g: 1 } };\no.f.g(${args(n)}); %}`)();
+		}
+		catch (e) {
+			print(n, ": ", e.message, "\n");
+		}
+	}
+%}
+-- End --
+
+-- Expect stdout --
+2: `o.f.g` is not a function, got 1 instead
+20: `o.f.g` is not a function, got 1 instead
+60: `o.f.g` is not a function, got 1 instead
+120: left-hand side is not a function, got 1 instead
+-- End --

@@ -3728,7 +3728,7 @@ uc_compiler_compile_module_source(uc_compiler_t *compiler, const char *modname, 
 	};
 
 	size_t i, load_idx = 0, n_imports = 0, n_exports = 0;
-	bool loaded = false;
+	bool loaded = false, res;
 	uc_value_t *import;
 	ssize_t slot;
 
@@ -3757,8 +3757,22 @@ uc_compiler_compile_module_source(uc_compiler_t *compiler, const char *modname, 
 	if (!loaded) {
 		/* We do not yet support linking precompiled modules at compile time,
 		   turn static import operation into dynamic load one. */
-		if (uc_source_type_test(source) == UC_SOURCE_TYPE_PRECOMPILED)
+		switch (uc_source_begin(source)) {
+		case UC_SOURCE_TYPE_PRECOMPILED:
+			uc_source_reset(source);
+
 			return uc_compiler_compile_dynload(compiler, modname, imports);
+
+		case UC_SOURCE_TYPE_UNAVAILABLE:
+			if (errp)
+				xasprintf(errp, "Unable to open source file %s: %s\n",
+					source->filename, strerror(errno));
+
+			return false;
+
+		default:
+			break;
+		}
 
 		load_idx = uc_program_function_id(compiler->program,
 			uc_program_function_last(compiler->program)) + 1;
@@ -3766,7 +3780,11 @@ uc_compiler_compile_module_source(uc_compiler_t *compiler, const char *modname, 
 		source->exports.offset = (size_t)-1;
 		n_exports = uc_compiler_get_exportnum(compiler);
 
-		if (!uc_compile_from_source(&config, source, compiler->program, errp))
+		res = uc_compile_from_source(&config, source, compiler->program, errp);
+
+		uc_source_reset(source);
+
+		if (!res)
 			return false;
 
 		/* The linked module's own exports are the last ones allocated while
@@ -4108,6 +4126,7 @@ uc_compiler_compile_import(uc_compiler_t *compiler)
 		                                       &compiler->parser->prev);
 
 		uc_compiler_emit_insn(compiler, 0, I_POP);
+		ucv_put(namelist);
 
 		return TK_SCOL;
 	}
@@ -4317,7 +4336,7 @@ uc_compile(uc_parse_config_t *config, uc_source_t *source, char **errp)
 	if (!config)
 		config = &uc_default_parse_config;
 
-	switch (uc_source_type_test(source)) {
+	switch (uc_source_begin(source)) {
 	case UC_SOURCE_TYPE_PLAIN:
 		prog = uc_compile_from_source(config, source, NULL, errp);
 		break;
@@ -4326,12 +4345,21 @@ uc_compile(uc_parse_config_t *config, uc_source_t *source, char **errp)
 		prog = uc_compile_from_bytecode(config, source, errp);
 		break;
 
+	case UC_SOURCE_TYPE_UNAVAILABLE:
+		if (errp)
+			xasprintf(errp, "Unable to open source file %s: %s\n",
+				source->filename, strerror(errno));
+
+		break;
+
 	default:
 		if (errp)
 			xasprintf(errp, "Unrecognized source type\n");
 
 		break;
 	}
+
+	uc_source_reset(source);
 
 	return prog;
 }

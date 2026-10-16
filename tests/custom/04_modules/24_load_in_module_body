@@ -1,0 +1,27 @@
+A file or a string that the body of a dynamically loaded module loads is a
+program of its own, not a module: it can return a value.
+
+-- Testcase --
+let loader = import("loader");
+
+print("file: ", loader.file(), "\n");
+print("string: ", loader.string(), "\n");
+-- End --
+
+-- File loader.uc --
+export const file = loadfile("files/script.uc");
+export const string = loadstring("return 2;\n");
+-- End --
+
+-- File script.uc --
+return 1;
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+file: 1
+string: 2
+-- End --

@@ -174,8 +174,8 @@ typedef struct {
 		size_t count;
 		char *entries;
 	} buffer;
-	unsigned char *rbuf;
-	size_t rlen, rpos;
+	const uint8_t *rbuf;
+	size_t rlen, rpos, off;
 } uc_lexer_t;
 
 

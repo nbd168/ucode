@@ -1,0 +1,144 @@
+The exports of statically linked modules belong to the main function of a
+program and live as long as that function. A program that is loaded and run
+once does not wait for the collector, also if its module exports a function.
+Each later call of the function binds the module instances of the first
+call, so module state carries over. A call that starts while another call of
+the function is active shares these instances, and the imports that the
+outer call resolves afterwards bind the correct exports. Functions imported
+during a call stay valid after it.
+
+-- Testcase --
+import * as fs from 'fs';
+
+let live = gc("count");
+
+for (let i = 0; i < 100; i++)
+	loadfile("files/counter.uc")();
+
+print("live values after 100 loads: ", gc("count") - live, "\n");
+
+let fn = loadfile("files/counter.uc");
+print("repeated call: ", fn(), " ", fn(), " ", fn(), "\n");
+
+gc();
+print("call after a collection: ", fn(), "\n");
+
+live = gc("count");
+
+for (let i = 0; i < 100; i++)
+	fn();
+
+print("live values after 100 calls: ", gc("count") - live, "\n");
+
+let inc = loadfile("files/keep.uc")();
+print("kept function: ", inc(), " ", inc(), "\n");
+
+global.depth = 0;
+global.nested = loadfile("files/nested.uc");
+print("nested run: ", global.nested(), "\n");
+
+print("tail call: ", loadfile("files/tail.uc")(), "\n");
+
+let failing = loadfile("files/failing.uc");
+
+for (let i = 0; i < 2; i++) {
+	try {
+		failing();
+	}
+	catch (e) {
+		print("failing run: ", e.message, "\n");
+	}
+}
+
+let dynamic = import("dynamic");
+print("dynamic import: ", dynamic.inc(), " ", dynamic.inc(), " ", dynamic.name, "\n");
+
+// A file that the body of a dynamically loaded module loads is a program of
+// its own, not a module.
+let loader = import("loader");
+print("loaded in a module body: ", loader.fn(), " ", loader.fn(), " ", loader.fn(), "\n");
+
+system([ fs.readlink("/proc/self/exe"), "-c", "-o", "files/precompiled.uc", "files/counter.uc" ]);
+fn = loadfile("files/precompiled.uc");
+print("precompiled: ", fn(), " ", fn(), "\n");
+-- End --
+
+-- File mod.uc --
+let n = 0;
+
+export function inc() { return ++n; };
+export const name = "mod";
+-- End --
+
+-- File counter.uc --
+import { inc } from "./mod.uc";
+
+return inc();
+-- End --
+
+-- File keep.uc --
+import { inc } from "./mod.uc";
+
+return inc;
+-- End --
+
+-- File nested.uc --
+import { inc } from "./mod.uc";
+
+let d = global.depth++;
+let count = inc();
+let inner = (d < 2) ? global.nested() : "-";
+
+import * as other from "./other.uc";
+import { value } from "./other.uc";
+
+return `${d}:${count}:${inc()}:${value()}:${other.default} ${inner}`;
+-- End --
+
+-- File other.uc --
+export function value() { return "value"; };
+export default "default";
+-- End --
+
+-- File tail.uc --
+import { inc } from "./mod.uc";
+
+inc();
+return inc();
+-- End --
+
+-- File failing.uc --
+import { inc } from "./mod.uc";
+
+die(`count ${inc()}`);
+-- End --
+
+-- File loader.uc --
+export const fn = loadfile("files/counter.uc");
+-- End --
+
+-- File dynamic.uc --
+import { inc as mod_inc, name as mod_name } from "./mod.uc";
+
+export function inc() { return mod_inc(); };
+export const name = mod_name;
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+live values after 100 loads: 0
+repeated call: 1 2 3
+call after a collection: 4
+live values after 100 calls: 0
+kept function: 1 2
+nested run: 0:1:6:value:default 1:2:5:value:default 2:3:4:value:default -
+tail call: 2
+failing run: count 1
+failing run: count 2
+dynamic import: 1 2 mod
+loaded in a module body: 1 2 3
+precompiled: 1 2
+-- End --

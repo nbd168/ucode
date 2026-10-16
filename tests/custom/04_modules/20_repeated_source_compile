@@ -1,0 +1,147 @@
+Each loadfile() or include() call compiles a source of its own. A compilation
+records its read position, its line information and its export table in the
+source. With one source for several calls, the imports of a later compilation
+resolve to wrong export slots, its error locations are wrong and a leading
+interpreter line is parsed as code.
+
+-- Testcase --
+import * as fs from 'fs';
+
+function run(label, fn) {
+	try {
+		fn();
+	}
+	catch (e) {
+		let m = match(e.stacktrace[0].context, /`([^`]*)`/);
+
+		printf("%s: %s: %s (line %d: %s)\n", label, e.type, e.message,
+			e.stacktrace[0].line, m ? m[1] : "no source line");
+	}
+}
+
+function repeat(label, count, fn) {
+	for (let i = 1; i <= count; i++)
+		run(`${label} #${i}`, fn);
+}
+
+repeat("named loadfile", 3, () => loadfile("files/named.uc")());
+repeat("wildcard loadfile", 3, () => loadfile("files/wildcard.uc")());
+repeat("default loadfile", 2, () => loadfile("files/default.uc")());
+repeat("named include", 2, () => include("files/named.uc"));
+repeat("wildcard include", 2, () => include("files/wildcard.uc"));
+
+fs.symlink("named.uc", `${TESTFILES_PATH}/link.uc`);
+run("symlink #1", () => loadfile("files/link.uc")());
+run("symlink #2", () => loadfile("./files/../files/named.uc")());
+
+repeat("no import", 2, () => loadfile("files/plain.uc")());
+repeat("native import", 2, () => loadfile("files/native.uc")());
+run("other file #1", () => loadfile("files/named.uc")());
+run("other file #2", () => loadfile("files/named2.uc")());
+repeat("loadstring", 2, () => loadstring(fs.readfile("files/plain.uc"))());
+
+fs.symlink("dynamic.uc", `${TESTFILES_PATH}/alias.uc`);
+run("dynamic import #1", () => print("dynamic: ", import("dynamic").own(), "\n"));
+run("dynamic import #2", () => print("dynamic: ", import("alias").own(), "\n"));
+
+repeat("error location", 3, () => loadfile("files/error.uc")());
+repeat("interpreter line", 2, () => loadfile("files/shebang.uc")());
+
+system([ fs.readlink("/proc/self/exe"), "-c", "-o", "files/precompiled.uc", "files/plain.uc" ]);
+repeat("precompiled", 2, () => loadfile("files/precompiled.uc")());
+-- End --
+
+-- File mod.uc --
+export function first() { return "first"; };
+export function second() { return "second"; };
+export default "default";
+-- End --
+
+-- File named.uc --
+import { second, first } from "./mod.uc";
+
+print("named: ", first(), " ", second(), "\n");
+-- End --
+
+-- File named2.uc --
+import { first } from "./mod.uc";
+
+print("named2: ", first(), "\n");
+-- End --
+
+-- File wildcard.uc --
+import * as mod from "./mod.uc";
+
+print("wildcard: ", mod.first(), " ", mod.second(), " ", mod.default, "\n");
+-- End --
+
+-- File default.uc --
+import def, { second } from "./mod.uc";
+
+print("default: ", def, " ", second(), "\n");
+-- End --
+
+-- File plain.uc --
+print("plain\n");
+-- End --
+
+-- File native.uc --
+import { basename } from "fs";
+
+print("native: ", basename("/a/b"), "\n");
+-- End --
+
+-- File dynamic.uc --
+import { first } from "./mod.uc";
+
+export function own() { return "own " + first(); };
+-- End --
+
+-- File error.uc --
+let a = 1;
+let b = 2;
+null.x = a + b;
+-- End --
+
+-- File shebang.uc --
+#!/usr/bin/env ucode
+print("interpreter line\n");
+-- End --
+
+-- Args --
+-R -L files/
+-- End --
+
+-- Expect stdout --
+named: first second
+named: first second
+named: first second
+wildcard: first second default
+wildcard: first second default
+wildcard: first second default
+default: default second
+default: default second
+named: first second
+named: first second
+wildcard: first second default
+wildcard: first second default
+named: first second
+named: first second
+plain
+plain
+native: b
+native: b
+named: first second
+named2: first
+plain
+plain
+dynamic: own first
+dynamic: own first
+error location #1: Type error: attempt to set property on null value (line 3: null.x = a + b;)
+error location #2: Type error: attempt to set property on null value (line 3: null.x = a + b;)
+error location #3: Type error: attempt to set property on null value (line 3: null.x = a + b;)
+interpreter line
+interpreter line
+plain
+plain
+-- End --
