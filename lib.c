@@ -5853,7 +5853,10 @@ uc_compile_parse_config(uc_parse_config_t *config, uc_value_t *spec)
 				if (ucv_type(p) != UC_STRING)
 					continue;
 
-				uc_vector_push(fields[i].path, ucv_string_get(p));
+				/* short strings are stored inline in the pointer, so take the
+				 * address of the array slot rather than of the local copy */
+				uc_vector_push(fields[i].path,
+					ucv_string_get(ucv_as_array(v)->entries[j]));
 			}
 		}
 	}
