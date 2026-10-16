@@ -162,60 +162,40 @@ static bool
 format_context_range(uc_stringbuf_t *buf, uc_source_t *src, size_t off,
                      size_t startoff, size_t endoff, bool compact)
 {
-	size_t len, rlen, lpos, eoff, sbegin, send, shift;
+	size_t len, lpos, eoff, sbegin, send, shift;
 	bool truncated;
 	char line[256];
-	long srcpos;
 	int eline;
 
-	srcpos = ftell(src->fp);
+	eline = uc_source_read_line(src, off, line, sizeof(line), &lpos, &truncated);
 
-	if (srcpos == -1)
+	if (!eline)
 		return false;
 
-	fseek(src->fp, 0, SEEK_SET);
+	if (compact)
+		ucv_stringbuf_printf(buf, "\033[2;40;97m%17s  %s",
+			source_filename(src, eline),
+			truncated ? "..." : "");
+	else
+		ucv_stringbuf_printf(buf, "\n `%s",
+			truncated ? "..." : "");
 
-	truncated = false;
-	eline = 1;
-	rlen = 0;
+	/* the index of the failing byte within the line and the columns gained by
+	 * prefixing an overlong line with "..." */
+	eoff = off - lpos;
+	shift = truncated ? 3 : 0;
 
-	while (fgets(line, sizeof(line), src->fp)) {
-		len = strlen(line);
-		rlen += len;
+	sbegin = send = eoff;
 
-		if (rlen >= off) {
-			if (compact)
-				ucv_stringbuf_printf(buf, "\033[2;40;97m%17s  %s",
-					source_filename(src, eline),
-					truncated ? "..." : "");
-			else
-				ucv_stringbuf_printf(buf, "\n `%s",
-					truncated ? "..." : "");
+	/* clip the statement's extent to the part of it on this line */
+	len = strlen(line);
 
-			/* the source offset this line starts at, the index of the failing
-			 * byte within it and the columns gained by prefixing an overlong
-			 * line with "..." */
-			lpos = rlen - len;
-			eoff = off - lpos;
-			shift = truncated ? 3 : 0;
-
-			sbegin = send = eoff;
-
-			/* clip the statement's extent to the part of it on this line */
-			if (endoff > startoff && endoff > lpos && startoff < lpos + len) {
-				sbegin = startoff > lpos ? startoff - lpos : 0;
-				send = endoff < lpos + len ? endoff - lpos : len;
-			}
-
-			format_context_line(buf, line, eoff + shift, sbegin + shift, send + shift, compact);
-			break;
-		}
-
-		truncated = (len > 0 && line[len-1] != '\n');
-		eline += !truncated;
+	if (endoff > startoff && endoff > lpos && startoff < lpos + len) {
+		sbegin = startoff > lpos ? startoff - lpos : 0;
+		send = endoff < lpos + len ? endoff - lpos : len;
 	}
 
-	fseek(src->fp, srcpos, SEEK_SET);
+	format_context_line(buf, line, eoff + shift, sbegin + shift, send + shift, compact);
 
 	return true;
 }

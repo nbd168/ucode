@@ -45,7 +45,9 @@ struct uc_source {
 	uc_value_t header;
 	char *filename, *runpath, *buffer;
 	FILE *fp;
-	size_t off;
+	uint8_t *rbuf;
+	size_t off, size;
+	bool sized;
 	uc_lineinfo_t lineinfo;
 	struct {
 		size_t count, offset;

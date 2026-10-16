@@ -68,12 +68,17 @@ static const struct keyword reserved_words[] = {
 
 static int
 fill_buf(uc_lexer_t *lex) {
-	lex->rbuf = xrealloc(lex->rbuf, 128);
-	lex->rlen = fread(lex->rbuf, 1, 128, lex->source->fp);
+	size_t off;
+
+	lex->rbuf = uc_source_read_block(lex->source, &lex->rlen, &off);
 	lex->rpos = 0;
 
-	if (!lex->rlen)
+	if (!lex->rbuf)
 		return EOF;
+
+	/* everything in front of the block has been consumed, so this merely
+	 * establishes the offset of the first byte of code */
+	lex->off = off;
 
 	lex->rpos++;
 
@@ -87,7 +92,7 @@ update_line(uc_lexer_t *lex, int ch) {
 	else if (ch != EOF)
 		uc_source_line_update(lex->source, 1);
 
-	lex->source->off++;
+	lex->off++;
 
 	return ch;
 }
@@ -131,11 +136,11 @@ emit_op(uc_lexer_t *lex, ssize_t pos, int type, uc_value_t *uv)
 	lex->curr.uv = uv;
 
 	if (pos < 0)
-		lex->curr.pos = lex->source->off + pos;
+		lex->curr.pos = lex->off + pos;
 	else
 		lex->curr.pos = (size_t)pos;
 
-	lex->curr.end = lex->source->off;
+	lex->curr.end = lex->off;
 
 	return &lex->curr;
 }
@@ -166,7 +171,7 @@ emit_buffer(uc_lexer_t *lex, ssize_t pos, int type, const char *strip_trailing_c
 static uc_token_t *
 parse_comment(uc_lexer_t *lex, int kind)
 {
-	size_t off = lex->source->off - 1;
+	size_t off = lex->off - 1;
 	int ch;
 
 	uc_vector_push(&lex->buffer, '/');
@@ -355,7 +360,7 @@ parse_string(uc_lexer_t *lex, int kind)
 	else
 		type = TK_STRING;
 
-	off = lex->source->off - 1;
+	off = lex->off - 1;
 
 	for (ch = next_char(lex); ch != EOF; ch = next_char(lex)) {
 		switch (ch) {
@@ -786,7 +791,7 @@ lex_find_token(uc_lexer_t *lex)
 
 	case '/':
 		ch = lookahead_char(lex);
-		lex->lastoff = lex->source->off - 1;
+		lex->lastoff = lex->off - 1;
 
 		if (ch == '/' || ch == '*')
 			return parse_comment(lex, ch);
@@ -876,7 +881,7 @@ lex_find_token(uc_lexer_t *lex)
 	case '\'':
 	case '"':
 	case '`':
-		lex->lastoff = lex->source->off - 1;
+		lex->lastoff = lex->off - 1;
 
 		return parse_string(lex, ch);
 
@@ -1011,7 +1016,7 @@ lex_step(uc_lexer_t *lex)
 
 			/* push out leading text */
 			tok = emit_buffer(lex, lex->lastoff, TK_TEXT, strip);
-			lex->lastoff = lex->source->off - 2;
+			lex->lastoff = lex->off - 2;
 
 			if (!tok)
 				continue;
@@ -1045,7 +1050,7 @@ lex_step(uc_lexer_t *lex)
 
 			tok = emit_op(lex, lex->lastoff, TK_COMMENT, NULL);
 
-			lex->lastoff = lex->source->off;
+			lex->lastoff = lex->off;
 			lex->state = UC_LEX_IDENTIFY_BLOCK;
 
 			return tok;
@@ -1054,13 +1059,13 @@ lex_step(uc_lexer_t *lex)
 			lex->state = UC_LEX_IDENTIFY_TOKEN;
 			lex->block = EXPRESSION;
 
-			return emit_op(lex, lex->source->off - 2, TK_LEXP, NULL);
+			return emit_op(lex, lex->off - 2, TK_LEXP, NULL);
 
 		case UC_LEX_BLOCK_STATEMENT_EMIT_TAG:
 			lex->state = UC_LEX_IDENTIFY_TOKEN;
 			lex->block = STATEMENTS;
 
-			return emit_op(lex, lex->source->off - 2, TK_LSTM, NULL);
+			return emit_op(lex, lex->off - 2, TK_LSTM, NULL);
 
 		case UC_LEX_IDENTIFY_TOKEN:
 			do { tok = lex_find_token(lex); } while (tok == NULL);
@@ -1075,7 +1080,7 @@ lex_step(uc_lexer_t *lex)
 				if (lex->modifier == UNSPEC && lex->config && lex->config->trim_blocks)
 					lex->modifier = NEWLINE;
 
-				lex->lastoff = lex->source->off;
+				lex->lastoff = lex->off;
 				lex->state = UC_LEX_IDENTIFY_BLOCK;
 				lex->block = NONE;
 
@@ -1084,7 +1089,7 @@ lex_step(uc_lexer_t *lex)
 
 			/* found end of expression block */
 			else if (lex->block == EXPRESSION && tok->type == TK_REXP) {
-				lex->lastoff = lex->source->off;
+				lex->lastoff = lex->off;
 				lex->state = UC_LEX_IDENTIFY_BLOCK;
 				lex->block = NONE;
 			}
@@ -1140,7 +1145,7 @@ lex_step(uc_lexer_t *lex)
 		}
 	}
 
-	return emit_op(lex, lex->source->off, TK_EOF, NULL);
+	return emit_op(lex, lex->off, TK_EOF, NULL);
 }
 
 void
@@ -1156,6 +1161,7 @@ uc_lexer_init(uc_lexer_t *lex, uc_parse_config_t *config, uc_source_t *source)
 
 	lex->rlen = 0;
 	lex->rpos = 0;
+	lex->off = 0;
 	lex->rbuf = NULL;
 
 	lex->buffer.count = 0;
@@ -1181,8 +1187,6 @@ uc_lexer_free(uc_lexer_t *lex)
 	uc_vector_clear(&lex->templates);
 
 	uc_source_put(lex->source);
-
-	free(lex->rbuf);
 }
 
 uc_token_t *

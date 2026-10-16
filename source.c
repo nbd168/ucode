@@ -66,6 +66,157 @@ uc_source_new_buffer(const char *name, char *buf, size_t len)
 	return src;
 }
 
+/* Number of source bytes lent to the lexer per block read. */
+#define UC_SOURCE_BLOCKSIZE 128
+
+const uint8_t *
+uc_source_read_block(uc_source_t *source, size_t *len, size_t *off)
+{
+	size_t rlen;
+
+	if (!source->rbuf)
+		source->rbuf = xalloc(UC_SOURCE_BLOCKSIZE);
+
+	rlen = fread(source->rbuf, 1, UC_SOURCE_BLOCKSIZE, source->fp);
+
+	if (off)
+		*off = source->off;
+
+	source->off += rlen;
+
+	*len = rlen;
+
+	return rlen ? source->rbuf : NULL;
+}
+
+size_t
+uc_source_read(uc_source_t *source, void *buf, size_t len)
+{
+	size_t rlen;
+
+	errno = 0;
+
+	rlen = fread(buf, 1, len, source->fp);
+	source->off += rlen;
+
+	return rlen;
+}
+
+size_t
+uc_source_offset(uc_source_t *source)
+{
+	return source->off;
+}
+
+size_t
+uc_source_remaining(uc_source_t *source)
+{
+	long pos, end;
+
+	if (!source->sized) {
+		/* the size of text that cannot seek is not known, treat it as
+		 * unbounded */
+		source->size = SIZE_MAX;
+		source->sized = true;
+
+		pos = ftell(source->fp);
+
+		if (pos >= 0 && fseek(source->fp, 0, SEEK_END) == 0) {
+			end = ftell(source->fp);
+
+			if (end >= 0)
+				source->size = end;
+
+			fseek(source->fp, pos, SEEK_SET);
+		}
+	}
+
+	return (source->size > source->off) ? source->size - source->off : 0;
+}
+
+/* Random access to the text of a source for error messages and the debugger,
+ * leaving the read position as found. */
+static FILE *
+uc_source_text_open(uc_source_t *source, long *pos)
+{
+	*pos = ftell(source->fp);
+
+	return (*pos != -1) ? source->fp : NULL;
+}
+
+static void
+uc_source_text_close(uc_source_t *source, FILE *fp, long pos)
+{
+	fseek(fp, pos, SEEK_SET);
+}
+
+size_t
+uc_source_read_line(uc_source_t *source, size_t off, char *line, size_t size,
+                    size_t *lpos, bool *truncated)
+{
+	size_t len, rlen = 0, eline = 1;
+	bool cont = false;
+	long pos;
+	FILE *fp;
+
+	*truncated = false;
+
+	if (size < 2 || !(fp = uc_source_text_open(source, &pos)))
+		return 0;
+
+	fseek(fp, 0, SEEK_SET);
+
+	while (fgets(line, size, fp)) {
+		len = strlen(line);
+		rlen += len;
+
+		if (rlen >= off) {
+			*truncated = cont;
+			*lpos = rlen - len;
+
+			uc_source_text_close(source, fp, pos);
+
+			return eline;
+		}
+
+		/* a chunk without a newline is part of a line longer than the buffer,
+		 * its remainder is delivered by the next one and does not advance the
+		 * line count */
+		cont = (len > 0 && line[len - 1] != '\n');
+		eline += !cont;
+	}
+
+	uc_source_text_close(source, fp, pos);
+
+	return 0;
+}
+
+char *
+uc_source_read_content(uc_source_t *source, size_t *len)
+{
+	size_t rlen, tlen = 0;
+	char *text = NULL;
+	long pos;
+	FILE *fp;
+
+	if (!(fp = uc_source_text_open(source, &pos)))
+		return NULL;
+
+	fseek(fp, 0, SEEK_SET);
+
+	do {
+		text = xrealloc(text, tlen + 4096);
+		rlen = fread(text + tlen, 1, 4096, fp);
+		tlen += rlen;
+	} while (rlen == 4096);
+
+	uc_source_text_close(source, fp, pos);
+
+	*len = tlen;
+
+	return text;
+}
+
 uc_source_t *
 uc_source_get(uc_source_t *source)
 {
@@ -125,11 +276,12 @@ uc_source_free(uc_source_t *source)
 	uc_source_state_clear(source);
 
 	fclose(source->fp);
+	free(source->rbuf);
 	free(source->buffer);
 }
 
 uc_source_type_t
-uc_source_type_test(uc_source_t *source)
+uc_source_begin(uc_source_t *source)
 {
 	union { char s[sizeof(uint32_t)]; uint32_t n; } buf = { 0 };
 	uc_source_type_t type = UC_SOURCE_TYPE_PLAIN;
@@ -257,20 +409,29 @@ uc_source_export_lookup(uc_source_t *source, uc_value_t *name)
  * contain the name actually being invoked, are shown. */
 #define UC_EXPR_MAXLEN 64
 
-/* The number of characters which may still be read while recovering an
- * expression. Since only the source of the arguments passed to the failing call
- * can be arbitrarily wide, this bounds the effort spent on an error message. */
-#define UC_EXPR_MAXREAD 4096
+/* The number of source bytes, ending with the closing parenthesis of the call,
+ * which are looked at while recovering an expression. Only the source of the
+ * arguments passed to the failing call can be arbitrarily wide, so the window
+ * starts out small and is doubled while the scan runs into its start, up to a
+ * limit which bounds the effort spent on an error message. */
+#define UC_EXPR_WINDOW_MIN 256
+#define UC_EXPR_WINDOW_MAX 4096
 
-/* The text of an invoked expression is recovered into a buffer which is filled
- * from its end towards its beginning, so that the characters end up in the
- * order they have in the source without a second pass. */
-static char uc_expr_text[UC_EXPR_MAXLEN + 1];
-static size_t uc_expr_pos, uc_expr_read;
+/* The state of one recovery, which lives on the stack of expr_recover().
+ *
+ * The window of source text being scanned is `len` bytes of the allocated
+ * buffer `win` starting at the source offset `base`. `cut` notes that the scan
+ * wanted to look in front of a window which does not start at the beginning of
+ * the file. */
+typedef struct {
+	char *win;
+	size_t base, len;
+	bool cut;
+} expr_t;
 
 /* Returns true if `ch` closes a string or template literal. */
 static bool
-uc_expr_quote(int ch)
+expr_quote(int ch)
 {
 	return ch == '\'' || ch == '"' || ch == '`';
 }
@@ -278,7 +439,7 @@ uc_expr_quote(int ch)
 /* Returns true if `ch` is a member access operator, all of which may be
  * surrounded by whitespace without ceasing to belong to the same expression. */
 static bool
-uc_expr_member_char(int ch)
+expr_member_char(int ch)
 {
 	return ch == '.' || ch == '[' || ch == '?';
 }
@@ -289,66 +450,54 @@ uc_expr_member_char(int ch)
  * lexer, plus the member access operators. Notably `:` is absent, so that
  * `foo ? bar : baz()` identifies `baz`. */
 static bool
-uc_expr_spine_char(int ch)
+expr_spine_char(int ch)
 {
 	return isalnum(ch) || ch == '_' || ch == '.' || ch == '?';
 }
 
-/* Reads the character at `off`, returning EOF once the read budget is used up.
- * The caller keeps track of the position, so that it stays in a register. */
+/* Returns the character at source offset `off`, or EOF if it is not within the
+ * window. */
 static int
-uc_expr_at(FILE *fp, size_t off)
+expr_at(expr_t *x, size_t off)
 {
-	if (uc_expr_read == 0)
+	if (off < x->base) {
+		x->cut |= (x->base > 0);
+
+		return EOF;
+	}
+
+	if (off - x->base >= x->len)
 		return EOF;
 
-	uc_expr_read--;
-
-	fseek(fp, (long)off, SEEK_SET);
-
-	return fgetc(fp);
-}
-
-/* Puts `ch` in front of the characters collected so far. Characters which no
- * longer fit are dropped, since only the tail of an over-long expression is of
- * interest. */
-static inline void
-uc_expr_collect(int ch)
-{
-	if (uc_expr_pos > 0)
-		uc_expr_text[--uc_expr_pos] = ch;
+	return (unsigned char)x->win[off - x->base];
 }
 
 /* Returns true if the literal quote at `off` is the opening one, which it is
  * when it is preceded by an even number of backslashes, since each of those
  * escapes the next character. */
 static bool
-uc_expr_quote_open(FILE *fp, size_t off)
+expr_quote_open(expr_t *x, size_t off)
 {
 	size_t n = 0;
 
-	while (off-- > 0 && uc_expr_at(fp, off) == '\\')
+	while (off-- > 0 && expr_at(x, off) == '\\')
 		n++;
 
 	return n % 2 == 0;
 }
 
 /* Returns the offset of the quote opening the literal which closes at `off`, or
- * SIZE_MAX if there is none. The characters passed over are collected along the
- * way; they are of no interest to the caller only in the latter case, in which
- * the scan is abandoned altogether. */
+ * SIZE_MAX if there is none. */
 static size_t
-uc_expr_back_literal(FILE *fp, int quote, size_t off)
+expr_back_literal(expr_t *x, int quote, size_t off)
 {
 	int ch;
 
 	while (off-- > 0) {
-		if ((ch = uc_expr_at(fp, off)) == EOF)
+		if ((ch = expr_at(x, off)) == EOF)
 			return SIZE_MAX;
 
-		uc_expr_collect(ch);
-
-		if (ch == quote && uc_expr_quote_open(fp, off))
+		if (ch == quote && expr_quote_open(x, off))
 			return off;
 	}
 
@@ -360,21 +509,19 @@ uc_expr_back_literal(FILE *fp, int quote, size_t off)
  * source. Literal values are skipped over as a whole, so that a bracket inside
  * one of them cannot be mistaken for the opening delimiter. */
 static size_t
-uc_expr_back_pair(FILE *fp, size_t off, int open)
+expr_back_pair(expr_t *x, size_t off, int open)
 {
 	size_t depth = 0, beg;
 	int ch;
 
 	while (off-- > 0) {
-		ch = uc_expr_at(fp, off);
+		ch = expr_at(x, off);
 
 		if (ch == EOF)
 			return SIZE_MAX;
 
-		uc_expr_collect(ch);
-
-		if (uc_expr_quote(ch)) {
-			if ((beg = uc_expr_back_literal(fp, ch, off)) == SIZE_MAX)
+		if (expr_quote(ch)) {
+			if ((beg = expr_back_literal(x, ch, off)) == SIZE_MAX)
 				return SIZE_MAX;
 
 			off = beg;
@@ -399,87 +546,42 @@ uc_expr_back_pair(FILE *fp, size_t off, int open)
 	return SIZE_MAX;
 }
 
-/* Extracts the expression invoked by the call whose closing parenthesis is at
- * source offset `end`, for use in error messages about a failed call.
+/* Returns the offset of the first byte of the expression invoked by the call
+ * whose closing parenthesis is at `end`, or SIZE_MAX if it cannot be
+ * determined; `*open` is set to the offset of the parenthesis opening the
+ * arguments, which is where the expression ends.
  *
  * The source in front of `end` is scanned backwards over the balanced pair
- * ending there, which delimits the arguments passed to the failing call and
- * whose opening parenthesis therefore marks the end of the invoked expression.
- * The scan then continues over the spine of that expression, taking subscripts,
- * nested calls and literal values as a whole so that their contents cannot be
- * mistaken for part of the surrounding expression, and dropping whitespace
- * which does not surround a member access operator, since such whitespace
- * separates the expression from whatever precedes it.
- *
- * Returns the recovered expression, which stays valid until the next call, or
- * NULL if it could not be determined. */
-__hidden const char *
-uc_source_callee_expr(uc_source_t *source, size_t end)
+ * ending there, which delimits the arguments passed to the failing call. The
+ * scan then continues over the spine of the invoked expression, taking
+ * subscripts, nested calls and literal values as a whole so that their contents
+ * cannot be mistaken for part of the surrounding expression, and passing over
+ * whitespace which surrounds a member access operator, while any other
+ * whitespace separates the expression from whatever precedes it. */
+static size_t
+expr_start(expr_t *x, size_t end, size_t *open)
 {
-	const char *res = NULL;
-	size_t i, beg, pos;
+	size_t i, beg, start;
 	int last = 0;
-	long save;
-	FILE *fp;
-
-	if (!source || !source->fp || end == 0)
-		return NULL;
-
-	fp = source->fp;
-	save = ftell(fp);
-
-	uc_expr_pos = UC_EXPR_MAXLEN;
-	uc_expr_read = UC_EXPR_MAXREAD;
 
 	/* the instruction of a failing call refers to the closing parenthesis of
 	 * the arguments passed to it */
-	if (uc_expr_at(fp, end) != ')')
-		goto out;
+	if (expr_at(x, end) != ')')
+		return SIZE_MAX;
 
-	/* the arguments themselves are of no interest, so whatever the scan
-	 * collected while looking for the parenthesis opening them is dropped */
-	pos = uc_expr_pos;
+	if ((beg = expr_back_pair(x, end, '(')) == SIZE_MAX || beg == 0)
+		return SIZE_MAX;
 
-	if ((beg = uc_expr_back_pair(fp, end, '(')) == SIZE_MAX || beg == 0)
-		goto out;
+	*open = start = i = beg;
 
-	uc_expr_pos = pos;
-
-	i = beg;
-
-	/* once the buffer is full, the expression is known to be incomplete, and
-	 * whatever comes next cannot make a difference anymore */
-	while (i-- > 0 && uc_expr_pos > 0) {
-		int ch = uc_expr_at(fp, i);
+	while (i-- > 0) {
+		int ch = expr_at(x, i);
 
 		if (ch == EOF)
 			break;
 
-		/* literal values, subscripts and nested calls are taken as a whole, so
-		 * that their contents cannot be mistaken for part of the expression */
-		if (uc_expr_quote(ch) || ch == ')' || ch == ']' || ch == '}') {
-			bool quote = uc_expr_quote(ch);
-			/* the opener matching a closer sits one below it, except for the
-			 * square and curly braces, which sit two below */
-			int open = quote ? ch : ch - 1 - (ch > ')');
-
-			uc_expr_collect(ch);
-
-			beg = quote
-				? uc_expr_back_literal(fp, ch, i)
-				: uc_expr_back_pair(fp, i, open);
-
-			if (beg == SIZE_MAX)
-				goto out;
-
-			i = beg;
-			last = open;
-
-			continue;
-		}
-
 		if (isspace((unsigned char)ch)) {
-			while (i > 0 && (ch = uc_expr_at(fp, --i)) != EOF
+			while (i > 0 && (ch = expr_at(x, --i)) != EOF
 			       && isspace((unsigned char)ch))
 				;
 
@@ -489,41 +591,197 @@ uc_source_callee_expr(uc_source_t *source, size_t end)
 			/* whitespace surrounding a member access operator is merely
 			 * formatting and thus belongs to the expression, as is the
 			 * whitespace in front of the arguments, which is skipped before any
-			 * of the expression has been collected; everywhere else it ends
-			 * the expression */
-			if (!uc_expr_member_char(last)
-			    && uc_expr_pos != UC_EXPR_MAXLEN
-			    && !uc_expr_member_char(ch))
+			 * of the expression has been seen; everywhere else it ends the
+			 * expression */
+			if (!expr_member_char(last) && start != *open &&
+			    !expr_member_char(ch))
 				break;
 		}
 
-		if (!uc_expr_spine_char((unsigned char)ch))
+		if (expr_quote(ch) || ch == ')' || ch == ']' || ch == '}') {
+			bool quote = expr_quote(ch);
+			/* the opener matching a closer sits one below it, except for the
+			 * square and curly braces, which sit two below */
+			int opener = quote ? ch : ch - 1 - (ch > ')');
+
+			beg = quote
+				? expr_back_literal(x, ch, i)
+				: expr_back_pair(x, i, opener);
+
+			if (beg == SIZE_MAX)
+				return SIZE_MAX;
+
+			i = start = beg;
+			last = opener;
+
+			continue;
+		}
+
+		if (!expr_spine_char(ch))
 			break;
 
-		uc_expr_collect(ch);
-
+		start = i;
 		last = ch;
 	}
 
-	if (uc_expr_pos == UC_EXPR_MAXLEN)
-		goto out;
+	/* nothing but whitespace in front of the arguments, or the scan ran into
+	 * the start of the window while the expression was still being followed */
+	if (start == *open || x->cut)
+		return SIZE_MAX;
 
-	/* the expression is longer than the buffer, so only its tail is known, and
-	 * the dots overwrite some of the characters which were collected */
-	if (uc_expr_pos == 0)
-		uc_expr_text[0] = uc_expr_text[1] = uc_expr_text[2] = '.';
+	return start;
+}
+
+/* Rewrites the source text in `s` up to `e` into `d`, which does not lie behind
+ * `s`, leaving out the whitespace of the expression spine. Whitespace within
+ * subscripts, arguments and literal values is kept as it is. Returns the end of
+ * the output. */
+static char *
+expr_format(char *d, const char *s, const char *e)
+{
+	size_t depth = 0;
+	int quote;
+
+	while (s < e) {
+		if (expr_quote(*s)) {
+			quote = *s;
+
+			for (*d++ = *s++; s < e && *s != quote; ) {
+				if (*s == '\\' && s + 1 < e)
+					*d++ = *s++;
+
+				*d++ = *s++;
+			}
+
+			if (s < e)
+				*d++ = *s++;
+
+			continue;
+		}
+
+		switch (*s) {
+		case ' ': case '\t': case '\n': case '\v': case '\f': case '\r':
+			if (depth == 0) {
+				s++;
+
+				continue;
+			}
+
+			break;
+
+		case '(': case '[': case '{':
+			depth++;
+			break;
+
+		case ')': case ']': case '}':
+			depth -= (depth > 0);
+			break;
+		}
+
+		*d++ = *s++;
+	}
+
+	return d;
+}
+
+/* Recovers the expression invoked by the call whose closing parenthesis is at
+ * source offset `end` from the `window` bytes of source ending there, see
+ * uc_source_callee_expr(). `*cut` is set if the scan wanted to look in front of
+ * the window, which makes a larger window worth a try if nothing was found. */
+static char *
+expr_recover(uc_source_t *source, size_t end, size_t window, bool *cut)
+{
+	size_t start, open = 0, len;
+	expr_t expr, *x = &expr;
+	char *tail;
+	long save;
+	FILE *fp;
+
+	*cut = false;
+
+	/* read the bytes in front of the closing parenthesis, and the parenthesis
+	 * itself, in one go and scan them in memory */
+	x->base = (end >= window) ? end + 1 - window : 0;
+	x->len = end + 1 - x->base;
+	x->cut = false;
+	x->win = xrealloc(NULL, x->len);
+
+	fp = uc_source_text_open(source, &save);
+
+	if (!fp) {
+		free(x->win);
+
+		return NULL;
+	}
+
+	if (fseek(fp, x->base, SEEK_SET) != 0 ||
+	    fread(x->win, 1, x->len, fp) != x->len) {
+		uc_source_text_close(source, fp, save);
+		free(x->win);
+
+		return NULL;
+	}
+
+	uc_source_text_close(source, fp, save);
+
+	start = expr_start(x, end, &open);
+	*cut = x->cut;
+
+	if (start == SIZE_MAX) {
+		free(x->win);
+
+		return NULL;
+	}
+
+	/* the text is rewritten in place, and ends up at the start of the window */
+	tail = expr_format(x->win, x->win + (start - x->base), x->win + (open - x->base));
+	len = tail - x->win;
+
+	if (len > UC_EXPR_MAXLEN) {
+		/* the expression is longer than the limit, so only its tail is known,
+		 * and the dots replace some of its characters */
+		memmove(x->win, tail - UC_EXPR_MAXLEN, UC_EXPR_MAXLEN);
+		memcpy(x->win, "...", 3);
+
+		len = UC_EXPR_MAXLEN;
+	}
 	/* an expression starting with a member access operator is missing its
 	 * left-hand side, so the scan could not be completed */
-	else if (uc_expr_member_char(uc_expr_text[uc_expr_pos]))
-		goto out;
+	else if (len == 0 || expr_member_char((unsigned char)x->win[0])) {
+		free(x->win);
 
-	uc_expr_text[UC_EXPR_MAXLEN] = 0;
+		return NULL;
+	}
 
-	res = uc_expr_text + uc_expr_pos;
+	x->win[len] = 0;
 
-out:
-	if (save >= 0)
-		fseek(fp, save, SEEK_SET);
+	return xrealloc(x->win, len + 1);
+}
 
-	return res;
+/* Extracts the expression invoked by the call whose closing parenthesis is at
+ * source offset `end`, for use in error messages about a failed call.
+ *
+ * The window of source text in front of `end` starts out small, and is doubled
+ * while the scan of the expression runs into its start.
+ *
+ * Returns the recovered expression, which the caller releases using free(), or
+ * NULL if it could not be determined. */
+__hidden char *
+uc_source_callee_expr(uc_source_t *source, size_t end)
+{
+	size_t window = UC_EXPR_WINDOW_MIN;
+	bool cut;
+	char *res;
+
+	if (!source || end == 0)
+		return NULL;
+
+	while (true) {
+		res = expr_recover(source, end, window, &cut);
+
+		if (res || !cut || window >= UC_EXPR_WINDOW_MAX)
+			return res;
+
+		window *= 2;
+	}
 }

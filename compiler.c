@@ -3757,7 +3757,7 @@ uc_compiler_compile_module_source(uc_compiler_t *compiler, const char *modname, 
 	if (!loaded) {
 		/* We do not yet support linking precompiled modules at compile time,
 		   turn static import operation into dynamic load one. */
-		if (uc_source_type_test(source) == UC_SOURCE_TYPE_PRECOMPILED)
+		if (uc_source_begin(source) == UC_SOURCE_TYPE_PRECOMPILED)
 			return uc_compiler_compile_dynload(compiler, modname, imports);
 
 		load_idx = uc_program_function_id(compiler->program,
@@ -4317,7 +4317,7 @@ uc_compile(uc_parse_config_t *config, uc_source_t *source, char **errp)
 	if (!config)
 		config = &uc_default_parse_config;
 
-	switch (uc_source_type_test(source)) {
+	switch (uc_source_begin(source)) {
 	case UC_SOURCE_TYPE_PLAIN:
 		prog = uc_compile_from_source(config, source, NULL, errp);
 		break;

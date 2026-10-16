@@ -731,9 +731,9 @@ uc_vm_frame_reinit(uc_vm_t *vm, uc_closure_t *closure, uc_value_t *ctx,
 
 /* Returns the expression invoked by the call that the instruction the VM is
  * about to execute belongs to, or NULL if it cannot be determined. The result
- * is meant for error messages describing a failed call, and stays valid until
- * the next call. */
-static const char *
+ * is meant for error messages describing a failed call, and must be
+ * released using free(). */
+static char *
 uc_vm_callee_expr(uc_vm_t *vm)
 {
 	uc_function_t *function;
@@ -871,7 +871,7 @@ uc_vm_call_function(uc_vm_t *vm, uc_value_t *ctx, uc_value_t *fno, bool mcall,
 		 * both the offending expression and the value that was not a function;
 		 * a NULL vm skips __tostring__ dispatch, so describing the value has no
 		 * side effects */
-		const char *callee = uc_vm_callee_expr(vm);
+		char *callee = uc_vm_callee_expr(vm);
 		char *hint = ucv_to_jsonstring(NULL, fno);
 		size_t hlen = strlen(hint);
 
@@ -883,6 +883,7 @@ uc_vm_call_function(uc_vm_t *vm, uc_value_t *ctx, uc_value_t *fno, bool mcall,
 		else
 			uc_vm_raise_exception(vm, EXCEPTION_TYPE, "left-hand side is not a function, got %s instead", hint);
 
+		free(callee);
 		free(hint);
 		ucv_put(ctx);
 		ucv_put(fno);

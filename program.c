@@ -445,48 +445,48 @@ uc_program_write(uc_program_t *prog, FILE *file, bool debug)
 }
 
 static bool
-read_error(FILE *file, char **errp, const char *subject, size_t rlen, size_t len)
+read_error(uc_source_t *in, char **errp, const char *subject, size_t rlen, size_t len)
 {
 	const char *reason;
 
-	if (feof(file))
+	if (!errno)
 		reason = "Premature EOF";
 	else
 		reason = strerror(errno);
 
 	if (errp)
 		xasprintf(errp,
-		          "%s while reading %s at offset %ld, got %zu of %zu bytes\n",
-		          reason, subject, ftell(file) - rlen, rlen, len);
+		          "%s while reading %s at offset %zu, got %zu of %zu bytes\n",
+		          reason, subject, uc_source_offset(in) - rlen, rlen, len);
 
 	return false;
 }
 
 static bool
-skip_padding(FILE *file, size_t len, char **errp)
+skip_padding(uc_source_t *in, size_t len, char **errp)
 {
 	size_t pad = (~len + 1) & (sizeof(uint32_t) - 1), rlen;
 	char buf[sizeof(uint32_t) - 1];
 
 	if (pad != 0) {
-		rlen = fread(buf, 1, pad, file);
+		rlen = uc_source_read(in, buf, pad);
 
 		if (rlen != pad)
-			return read_error(file, errp, "padding", rlen, pad);
+			return read_error(in, errp, "padding", rlen, pad);
 	}
 
 	return true;
 }
 
 static bool
-read_u32(FILE *file, uint32_t *n, const char *subj, char **errp)
+read_u32(uc_source_t *in, uint32_t *n, const char *subj, char **errp)
 {
-	size_t rlen = fread(n, 1, sizeof(*n), file);
+	size_t rlen = uc_source_read(in, n, sizeof(*n));
 
 	if (rlen != sizeof(*n)) {
 		*n = 0;
 
-		return read_error(file, errp, subj ? subj : "uint32_t", rlen, sizeof(*n));
+		return read_error(in, errp, subj ? subj : "uint32_t", rlen, sizeof(*n));
 	}
 
 	*n = be32toh(*n);
@@ -495,14 +495,14 @@ read_u32(FILE *file, uint32_t *n, const char *subj, char **errp)
 }
 
 static bool
-read_u64(FILE *file, uint64_t *n, const char *subj, char **errp)
+read_u64(uc_source_t *in, uint64_t *n, const char *subj, char **errp)
 {
-	size_t rlen = fread(n, 1, sizeof(*n), file);
+	size_t rlen = uc_source_read(in, n, sizeof(*n));
 
 	if (rlen != sizeof(*n)) {
 		*n = 0;
 
-		return read_error(file, errp, subj ? subj : "uint64_t", rlen, sizeof(*n));
+		return read_error(in, errp, subj ? subj : "uint64_t", rlen, sizeof(*n));
 	}
 
 	*n = be64toh(*n);
@@ -511,7 +511,7 @@ read_u64(FILE *file, uint64_t *n, const char *subj, char **errp)
 }
 
 static bool
-read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp);
+read_size_t(uc_source_t *in, size_t *n, size_t size, const char *subj, char **errp);
 
 /* A count or length taken from the file sizes an allocation, and every item
  * it counts is then read from that same file, so a value larger than the
@@ -519,24 +519,12 @@ read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp);
  * field from reaching xalloc(), which aborts the process rather than
  * returning. */
 static bool
-length_fits(FILE *file, size_t n, const char *subj, char **errp)
+length_fits(uc_source_t *in, size_t n, const char *subj, char **errp)
 {
-	long pos, end;
-
-	pos = ftell(file);
-
-	if (pos < 0 || fseek(file, 0, SEEK_END) != 0)
-		return true;
-
-	end = ftell(file);
-
-	if (fseek(file, pos, SEEK_SET) != 0)
-		return false;
-
-	if (end >= pos && n > (size_t)(end - pos)) {
+	if (n > uc_source_remaining(in)) {
 		if (errp)
-			xasprintf(errp, "Invalid length %zu for %s at offset %ld\n",
-			          n, subj, pos);
+			xasprintf(errp, "Invalid length %zu for %s at offset %zu\n",
+			          n, subj, uc_source_offset(in));
 
 		return false;
 	}
@@ -545,27 +533,15 @@ length_fits(FILE *file, size_t n, const char *subj, char **errp)
 }
 
 static bool
-read_count(FILE *file, size_t *n, size_t itemsize, const char *subj, char **errp)
+read_count(uc_source_t *in, size_t *n, size_t itemsize, const char *subj, char **errp)
 {
-	long pos, end;
-
-	if (!read_size_t(file, n, sizeof(uint32_t), subj, errp))
+	if (!read_size_t(in, n, sizeof(uint32_t), subj, errp))
 		return false;
 
-	pos = ftell(file);
-
-	if (pos < 0 || fseek(file, 0, SEEK_END) != 0)
-		return true;
-
-	end = ftell(file);
-
-	if (fseek(file, pos, SEEK_SET) != 0)
-		return false;
-
-	if (end >= pos && *n > (size_t)(end - pos) / (itemsize ? itemsize : 1)) {
+	if (*n > uc_source_remaining(in) / (itemsize ? itemsize : 1)) {
 		if (errp)
-			xasprintf(errp, "Invalid count %zu for %s at offset %ld\n",
-			          *n, subj, pos);
+			xasprintf(errp, "Invalid count %zu for %s at offset %zu\n",
+			          *n, subj, uc_source_offset(in));
 
 		return false;
 	}
@@ -573,15 +549,15 @@ read_count(FILE *file, size_t *n, size_t itemsize, const char *subj, char **errp
 	return true;
 }
 
-#define read_length(file, n, subj, errp) read_count(file, n, 1, subj, errp)
+#define read_length(in, n, subj, errp) read_count(in, n, 1, subj, errp)
 
 static bool
-read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp)
+read_size_t(uc_source_t *in, size_t *n, size_t size, const char *subj, char **errp)
 {
 	union { uint8_t u8; uint16_t u16; uint32_t u32; uint64_t u64; } nval;
 	size_t rlen;
 
-	rlen = fread(&nval.u64, 1, size, file);
+	rlen = uc_source_read(in, &nval.u64, size);
 
 	if (rlen != size) {
 		*n = 0;
@@ -595,7 +571,7 @@ read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp)
 			}
 		}
 
-		return read_error(file, errp, subj, rlen, sizeof(nval));
+		return read_error(in, errp, subj, rlen, sizeof(nval));
 	}
 
 	switch (size) {
@@ -609,7 +585,7 @@ read_size_t(FILE *file, size_t *n, size_t size, const char *subj, char **errp)
 }
 
 static bool
-_read_vector(FILE *file, void *ptr, size_t itemsize, const char *subj, char **errp)
+_read_vector(uc_source_t *in, void *ptr, size_t itemsize, const char *subj, char **errp)
 {
 	struct { size_t count; void *data; } *vec = ptr;
 	size_t rlen, len;
@@ -617,15 +593,15 @@ _read_vector(FILE *file, void *ptr, size_t itemsize, const char *subj, char **er
 
 	snprintf(subjbuf, sizeof(subjbuf), "%s vector size", subj);
 
-	if (!read_count(file, &vec->count, itemsize, subjbuf, errp))
+	if (!read_count(in, &vec->count, itemsize, subjbuf, errp))
 		return false;
 
 	vec->data = xcalloc(vec->count, itemsize);
 
 	len = vec->count;
-	rlen = fread(vec->data, itemsize, len, file);
+	rlen = uc_source_read(in, vec->data, len * itemsize);
 
-	if (rlen != len) {
+	if (rlen != len * itemsize) {
 		free(vec->data);
 
 		vec->count = 0;
@@ -633,30 +609,30 @@ _read_vector(FILE *file, void *ptr, size_t itemsize, const char *subj, char **er
 
 		snprintf(subjbuf, sizeof(subjbuf), "%s vector data", subj);
 
-		return read_error(file, errp, subjbuf, rlen * itemsize, len * itemsize);
+		return read_error(in, errp, subjbuf, rlen, len * itemsize);
 	}
 
-	return skip_padding(file, vec->count * itemsize, errp);
+	return skip_padding(in, vec->count * itemsize, errp);
 }
 
-#define read_vector(file, vec, subj, errp) \
-	_read_vector(file, vec, sizeof((vec)->entries[0]), subj, errp)
+#define read_vector(in, vec, subj, errp) \
+	_read_vector(in, vec, sizeof((vec)->entries[0]), subj, errp)
 
 static bool
-read_string(FILE *file, char *dst, size_t len, const char *subj, char **errp)
+read_string(uc_source_t *in, char *dst, size_t len, const char *subj, char **errp)
 {
 	size_t rlen;
 
-	rlen = fread(dst, 1, len, file);
+	rlen = uc_source_read(in, dst, len);
 
 	if (rlen != len)
-		return read_error(file, errp, subj, rlen, len);
+		return read_error(in, errp, subj, rlen, len);
 
-	return skip_padding(file, len, errp);
+	return skip_padding(in, len, errp);
 }
 
 static bool
-read_vallist(FILE *file, uc_value_list_t *vallist, const char *subj, char **errp)
+read_vallist(uc_source_t *in, uc_value_list_t *vallist, const char *subj, char **errp)
 {
 	char subjbuf[64];
 	size_t i;
@@ -664,7 +640,7 @@ read_vallist(FILE *file, uc_value_list_t *vallist, const char *subj, char **errp
 	/* read index */
 	snprintf(subjbuf, sizeof(subjbuf), "%s index size", subj);
 
-	if (!read_count(file, &vallist->isize, sizeof(uint64_t), subjbuf, errp))
+	if (!read_count(in, &vallist->isize, sizeof(uint64_t), subjbuf, errp))
 		goto out;
 
 	vallist->index = xcalloc(sizeof(vallist->index[0]), vallist->isize);
@@ -672,21 +648,21 @@ read_vallist(FILE *file, uc_value_list_t *vallist, const char *subj, char **errp
 	for (i = 0; i < vallist->isize; i++) {
 		snprintf(subjbuf, sizeof(subjbuf), "%s index entry %zu of %zu", subj, i, vallist->isize);
 
-		if (!read_u64(file, &vallist->index[i], subjbuf, errp))
+		if (!read_u64(in, &vallist->index[i], subjbuf, errp))
 			goto out;
 	}
 
 	/* read data */
 	snprintf(subjbuf, sizeof(subjbuf), "%s data size", subj);
 
-	if (!read_length(file, &vallist->dsize, subjbuf, errp))
+	if (!read_length(in, &vallist->dsize, subjbuf, errp))
 		goto out;
 
 	vallist->data = xalloc(vallist->dsize);
 
 	snprintf(subjbuf, sizeof(subjbuf), "%s data", subj);
 
-	if (!read_string(file, vallist->data, vallist->dsize, subj, errp))
+	if (!read_string(in, vallist->data, vallist->dsize, subj, errp))
 		goto out;
 
 	return true;
@@ -705,7 +681,7 @@ out:
 }
 
 static bool
-read_exports(FILE *file, uc_source_t *source, uint32_t flags, const char *subj, char **errp)
+read_exports(uc_source_t *in, uc_source_t *source, uint32_t flags, const char *subj, char **errp)
 {
 	size_t i, num_exports, len;
 	uc_stringbuf_t *buf;
@@ -717,7 +693,7 @@ read_exports(FILE *file, uc_source_t *source, uint32_t flags, const char *subj, 
 		/* read export count */
 		snprintf(subjbuf, sizeof(subjbuf), "%s count", subj);
 
-		if (!read_count(file, &num_exports, sizeof(uint32_t), subjbuf, errp))
+		if (!read_count(in, &num_exports, sizeof(uint32_t), subjbuf, errp))
 			return false;
 
 		/* read export symbol names */
@@ -726,14 +702,14 @@ read_exports(FILE *file, uc_source_t *source, uint32_t flags, const char *subj, 
 			snprintf(subjbuf, sizeof(subjbuf), "%s entry %zu of %zu size",
 					 subj, i, num_exports);
 
-			if (!read_size_t(file, &len, sizeof(uint32_t), subjbuf, errp))
+			if (!read_size_t(in, &len, sizeof(uint32_t), subjbuf, errp))
 				return false;
 
 			if (len < 0xffffffff) {
 				snprintf(subjbuf, sizeof(subjbuf), "%s entry %zu of %zu name",
 						subj, i, num_exports);
 
-				if (!length_fits(file, len, subjbuf, errp))
+				if (!length_fits(in, len, subjbuf, errp))
 					return false;
 
 				buf = ucv_stringbuf_new();
@@ -747,7 +723,7 @@ read_exports(FILE *file, uc_source_t *source, uint32_t flags, const char *subj, 
 					return false;
 				}
 
-				if (!read_string(file, buf->buf + buf->bpos - len - 1, len, subjbuf, errp))
+				if (!read_string(in, buf->buf + buf->bpos - len - 1, len, subjbuf, errp))
 				{
 					printbuf_free(buf);
 					return false;
@@ -775,23 +751,23 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 	size_t len, count;
 
 	if (flags & UC_PROGRAM_F_SOURCEINFO) {
-		if (!read_count(input->fp, &count, sizeof(uint32_t) * 2,
+		if (!read_count(input, &count, sizeof(uint32_t) * 2,
 		                "amount of source entries", errp))
 			return NULL;
 
 		while (count > 0) {
-			if (!read_length(input->fp, &len, "sourceinfo filename length", errp))
+			if (!read_length(input, &len, "sourceinfo filename length", errp))
 				return NULL;
 
 			path = xalloc(len + 1);
 
-			if (!read_string(input->fp, path, len, "sourceinfo filename", errp)) {
+			if (!read_string(input, path, len, "sourceinfo filename", errp)) {
 				free(path);
 
 				return NULL;
 			}
 
-			if (!read_length(input->fp, &len, "sourceinfo code buffer length", errp)) {
+			if (!read_length(input, &len, "sourceinfo code buffer length", errp)) {
 				free(path);
 
 				return NULL;
@@ -800,7 +776,7 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 			if (len > 0) {
 				code = xalloc(len);
 
-				if (!read_string(input->fp, code, len, "sourceinfo code buffer data", errp)) {
+				if (!read_string(input, code, len, "sourceinfo code buffer data", errp)) {
 					free(code);
 					free(path);
 
@@ -818,7 +794,7 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 				}
 			}
 
-			if (!read_vector(input->fp, &source->lineinfo, "sourceinfo lineinfo", errp)) {
+			if (!read_vector(input, &source->lineinfo, "sourceinfo lineinfo", errp)) {
 				uc_source_put(source);
 				free(path);
 
@@ -844,7 +820,7 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 }
 
 static bool
-read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char **errp)
+read_chunk(uc_source_t *in, uc_chunk_t *chunk, uint32_t flags, const char *subj, char **errp)
 {
 	uc_varrange_t *varrange;
 	uc_ehrange_t *ehrange;
@@ -854,14 +830,14 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 	/* read bytecode data */
 	snprintf(subjbuf, sizeof(subjbuf), "%s byte code", subj);
 
-	if (!read_vector(file, chunk, subjbuf, errp))
+	if (!read_vector(in, chunk, subjbuf, errp))
 		goto out;
 
 	/* read exception ranges */
 	if (flags & UC_FUNCTION_F_HAS_EXCEPTIONS) {
 		snprintf(subjbuf, sizeof(subjbuf), "%s exception ranges count", subj);
 
-		if (!read_count(file, &chunk->ehranges.count,
+		if (!read_count(in, &chunk->ehranges.count,
 		                sizeof(uint32_t) * 4, subjbuf, errp))
 			goto out;
 
@@ -875,10 +851,10 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 
 			ehrange = &chunk->ehranges.entries[i];
 
-			if (!read_size_t(file, &ehrange->from,   sizeof(uint32_t), subjbuf, errp) ||
-			    !read_size_t(file, &ehrange->to,     sizeof(uint32_t), subjbuf, errp) ||
-			    !read_size_t(file, &ehrange->target, sizeof(uint32_t), subjbuf, errp) ||
-			    !read_size_t(file, &ehrange->slot,   sizeof(uint32_t), subjbuf, errp))
+			if (!read_size_t(in, &ehrange->from,   sizeof(uint32_t), subjbuf, errp) ||
+			    !read_size_t(in, &ehrange->to,     sizeof(uint32_t), subjbuf, errp) ||
+			    !read_size_t(in, &ehrange->target, sizeof(uint32_t), subjbuf, errp) ||
+			    !read_size_t(in, &ehrange->slot,   sizeof(uint32_t), subjbuf, errp))
 				goto out;
 		}
 	}
@@ -887,7 +863,7 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 	if (flags & UC_FUNCTION_F_HAS_VARDBG) {
 		snprintf(subjbuf, sizeof(subjbuf), "%s variable scopes count", subj);
 
-		if (!read_count(file, &chunk->debuginfo.variables.count,
+		if (!read_count(in, &chunk->debuginfo.variables.count,
 		                sizeof(uint32_t) * 4, subjbuf, errp))
 			goto out;
 
@@ -901,10 +877,10 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 
 			varrange = &chunk->debuginfo.variables.entries[i];
 
-			if (!read_size_t(file, &varrange->from,    sizeof(uint32_t), subjbuf, errp) ||
-			    !read_size_t(file, &varrange->to,      sizeof(uint32_t), subjbuf, errp) ||
-			    !read_size_t(file, &varrange->slot,    sizeof(uint32_t), subjbuf, errp) ||
-			    !read_size_t(file, &varrange->nameidx, sizeof(uint32_t), subjbuf, errp))
+			if (!read_size_t(in, &varrange->from,    sizeof(uint32_t), subjbuf, errp) ||
+			    !read_size_t(in, &varrange->to,      sizeof(uint32_t), subjbuf, errp) ||
+			    !read_size_t(in, &varrange->slot,    sizeof(uint32_t), subjbuf, errp) ||
+			    !read_size_t(in, &varrange->nameidx, sizeof(uint32_t), subjbuf, errp))
 			    goto out;
 
 			if (varrange->slot >= ((uint32_t)-1 / 2))
@@ -913,7 +889,7 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 
 		snprintf(subjbuf, sizeof(subjbuf), "%s variable names", subj);
 
-		if (!read_vallist(file, &chunk->debuginfo.varnames, subjbuf, errp))
+		if (!read_vallist(in, &chunk->debuginfo.varnames, subjbuf, errp))
 			goto out;
 	}
 
@@ -921,7 +897,7 @@ read_chunk(FILE *file, uc_chunk_t *chunk, uint32_t flags, const char *subj, char
 	if (flags & UC_FUNCTION_F_HAS_OFFSETDBG) {
 		snprintf(subjbuf, sizeof(subjbuf), "%s source offsets", subj);
 
-		if (!read_vector(file, &chunk->debuginfo.offsets, subjbuf, errp))
+		if (!read_vector(in, &chunk->debuginfo.offsets, subjbuf, errp))
 			goto out;
 	}
 
@@ -947,7 +923,7 @@ out:
 }
 
 static bool
-read_function(FILE *file, uc_program_t *program, size_t idx, char **errp)
+read_function(uc_source_t *in, uc_program_t *program, size_t idx, char **errp)
 {
 	size_t nargs, nupvals, srcidx, srcpos, namelen = 0;
 	char subjbuf[64], *name = NULL;
@@ -957,29 +933,29 @@ read_function(FILE *file, uc_program_t *program, size_t idx, char **errp)
 
 	snprintf(subjbuf, sizeof(subjbuf), "function #%zu flags", idx);
 
-	if (!read_u32(file, &flags, subjbuf, errp))
+	if (!read_u32(in, &flags, subjbuf, errp))
 		goto out;
 
 	if (flags & UC_FUNCTION_F_HAS_NAME) {
 		snprintf(subjbuf, sizeof(subjbuf), "function #%zu name length", idx);
 
-		if (!read_length(file, &namelen, subjbuf, errp))
+		if (!read_length(in, &namelen, subjbuf, errp))
 			goto out;
 
 		name = xalloc(namelen + 1);
 
 		snprintf(subjbuf, sizeof(subjbuf), "function #%zu name", idx);
 
-		if (!read_string(file, name, namelen, subjbuf, errp))
+		if (!read_string(in, name, namelen, subjbuf, errp))
 			goto out;
 	}
 
 	snprintf(subjbuf, sizeof(subjbuf), "function #%zu (%s) arg count and offset", idx, name ? name : "-");
 
-	if (!read_size_t(file, &nargs,   sizeof(uint16_t), subjbuf, errp) ||
-	    !read_size_t(file, &nupvals, sizeof(uint16_t), subjbuf, errp) ||
-	    !read_size_t(file, &srcidx,  sizeof(uint32_t), subjbuf, errp) ||
-	    !read_size_t(file, &srcpos,  sizeof(uint32_t), subjbuf, errp)) {
+	if (!read_size_t(in, &nargs,   sizeof(uint16_t), subjbuf, errp) ||
+	    !read_size_t(in, &nupvals, sizeof(uint16_t), subjbuf, errp) ||
+	    !read_size_t(in, &srcidx,  sizeof(uint32_t), subjbuf, errp) ||
+	    !read_size_t(in, &srcpos,  sizeof(uint32_t), subjbuf, errp)) {
 		goto out;
 	}
 
@@ -999,7 +975,7 @@ read_function(FILE *file, uc_program_t *program, size_t idx, char **errp)
 
 	snprintf(subjbuf, sizeof(subjbuf), "function #%zu (%s) body", idx, name ? name : "-");
 
-	if (!read_chunk(file, &func->chunk, flags, subjbuf, errp))
+	if (!read_chunk(in, &func->chunk, flags, subjbuf, errp))
 		goto out;
 
 	free(name);
@@ -1019,7 +995,7 @@ uc_program_load(uc_source_t *input, char **errp)
 	uint32_t flags, i;
 	size_t nfuncs;
 
-	if (!read_u32(input->fp, &i, "file magic", errp))
+	if (!read_u32(input, &i, "file magic", errp))
 		goto out;
 
 	if (i != UC_PRECOMPILED_BYTECODE_MAGIC) {
@@ -1027,7 +1003,7 @@ uc_program_load(uc_source_t *input, char **errp)
 		goto out;
 	}
 
-	if (!read_u32(input->fp, &flags, "program flags", errp))
+	if (!read_u32(input, &flags, "program flags", errp))
 		goto out;
 
 	if ((flags >> 24) != UCODE_BYTECODE_VERSION) {
@@ -1042,18 +1018,18 @@ uc_program_load(uc_source_t *input, char **errp)
 	if (!read_sourceinfo(input, flags, errp, program))
 		goto out;
 
-	if (!read_vallist(input->fp, &program->constants, "constants", errp))
+	if (!read_vallist(input, &program->constants, "constants", errp))
 		goto out;
 
-	if (!read_exports(input->fp, program->sources.entries[0], flags,
+	if (!read_exports(input, program->sources.entries[0], flags,
 					  "exports", errp))
 		goto out;
 
-	if (!read_count(input->fp, &nfuncs, sizeof(uint32_t), "function count", errp))
+	if (!read_count(input, &nfuncs, sizeof(uint32_t), "function count", errp))
 		goto out;
 
 	for (i = 0; i < nfuncs; i++)
-		if (!read_function(input->fp, program, i, errp))
+		if (!read_function(input, program, i, errp))
 			goto out;
 
 	return program;
