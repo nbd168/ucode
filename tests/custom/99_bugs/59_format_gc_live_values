@@ -180,21 +180,33 @@ conversion failed
 
 Calling exit() from a converter discards the entire VM stack. The formatter
 must not pop its own slot afterwards and must not invoke further converters.
+Use sprintf() so the test does not depend on partial output after exit().
 
 -- Testcase --
 {%
-	print([
+	sprintf('%J', [
 		proto({}, { tostring: () => exit(3) }),
 		proto({}, { tostring: () => { print('converter called\n'); return 'B'; } }),
 		{ n: 7 }
-	], '\n');
+	]);
 	print('not reached\n');
 %}
 -- End --
 
--- Expect stdout --
-[ { }, { }, { "n": 7 } ]
--- End (no-eol) --
+-- Expect exitcode --
+3
+-- End --
+
+
+An exiting converter may release a directly formatted temporary value.
+The formatter must not access it again after the converter returns.
+
+-- Testcase --
+{%
+	print(proto({}, { tostring: () => exit(3) }));
+	print('not reached\n');
+%}
+-- End --
 
 -- Expect exitcode --
 3

@@ -1979,6 +1979,10 @@ ucv_to_stringbuf_formatted(uc_vm_t *vm, uc_stringbuf_t *pb, uc_value_t *uv, size
 		    ucv_call_tostring(vm, pb, uv, json))
 			goto out;
 
+		/* exit() may have released uv while resetting the VM stack. */
+		if (vm->exception.type == EXCEPTION_EXIT)
+			goto out;
+
 		constified = ucv_set_constant(uv, true);
 	}
 
