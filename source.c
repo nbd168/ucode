@@ -122,6 +122,7 @@ uc_source_reset(uc_source_t *source)
 	source->rbuf = NULL;
 	source->off = 0;
 	source->done = false;
+	source->sized = false;
 
 	if (source->buffer) {
 		fseek(source->fp, 0, SEEK_SET);
@@ -401,8 +402,13 @@ uc_source_begin(uc_source_t *source)
 	FILE *fp;
 	int c = 0;
 
-	/* start over from the beginning of the text */
+	/* A compilation records the line information and the export table in the
+	 * source, and a source can outlive its compilation. Drop that state, and
+	 * start over from the beginning of the text. */
 	uc_source_reset(source);
+	uc_source_state_clear(source);
+
+	source->exports.offset = 0;
 
 	if (!uc_source_stream_ensure(source))
 		return UC_SOURCE_TYPE_UNAVAILABLE;
