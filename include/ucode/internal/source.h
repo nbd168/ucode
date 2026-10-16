@@ -21,6 +21,8 @@
 #include "ucode/internal/types.h"
 #include "ucode/internal/util.h"
 
+__hidden uc_source_t *uc_source_new_path(const char *path);
+
 __hidden void uc_source_free(uc_source_t *source);
 
 __hidden const uint8_t *uc_source_read_block(uc_source_t *source, size_t *len,
@@ -35,6 +37,8 @@ __hidden size_t uc_source_read(uc_source_t *source, void *buf, size_t len);
 
 __hidden size_t uc_source_offset(uc_source_t *source);
 __hidden size_t uc_source_remaining(uc_source_t *source);
+
+__hidden void uc_source_reset(uc_source_t *source);
 
 __hidden uc_source_type_t uc_source_begin(uc_source_t *source);
 

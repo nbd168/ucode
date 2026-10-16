@@ -30,6 +30,7 @@
 typedef enum {
 	UC_SOURCE_TYPE_PLAIN = 0,
 	UC_SOURCE_TYPE_PRECOMPILED = 1,
+	UC_SOURCE_TYPE_UNAVAILABLE = 2,
 } uc_source_type_t;
 
 /* Create a source from a file or an in-memory buffer. The buffer variant

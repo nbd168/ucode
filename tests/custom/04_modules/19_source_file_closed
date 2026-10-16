@@ -1,0 +1,83 @@
+A source holds its file open only while it is compiled. A live program thus
+holds no open file, also not for the modules that it links. The text for an
+error message is read from the path of the source. If that file is gone, the
+message has no source context.
+
+-- Testcase --
+import * as fs from 'fs';
+
+function open_files() {
+	return length(fs.lsdir("/proc/self/fd"));
+}
+
+function raise(label, fn, text) {
+	try {
+		fn();
+	}
+	catch (e) {
+		print(label, ": ", e.message, ", line ", e.stacktrace[0].line,
+		      index(e.stacktrace[0].context, text) < 0 ? ", no source text\n" : ", with source text\n");
+	}
+}
+
+fs.mkdir("files");
+
+let fds = open_files();
+let held = [];
+
+for (let i = 0; i < 100; i++) {
+	fs.writefile(`files/mod${i}.uc`, "export const value = 1;\n");
+	fs.writefile(`files/root${i}.uc`, `import { value } from './mod${i}.uc';\nreturn value;\n`);
+	push(held, loadfile(`files/root${i}.uc`));
+}
+
+print("open files for 100 live programs: ", open_files() - fds, "\n");
+
+fs.writefile("files/fail.uc", "let o = {};\n\nreturn {\n\tstore: () => null.x = 1,\n\tcall: () => o.missing()\n};\n");
+
+let fail = loadfile("files/fail.uc")();
+
+raise("store", fail.store, "null.x = 1");
+raise("call", fail.call, "o.missing()");
+
+fs.chdir("files");
+raise("store, other directory", fail.store, "null.x = 1");
+fs.chdir("..");
+
+fs.unlink("files/fail.uc");
+
+raise("store, file removed", fail.store, "null.x = 1");
+raise("call, file removed", fail.call, "o.missing()");
+
+fs.writefile("files/broken.uc", "let x = 1;\nlet = 2;\n");
+
+try {
+	loadfile("files/broken.uc");
+}
+catch (e) {
+	print(e.message);
+}
+
+print("open files at the end: ", open_files() - fds, "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+open files for 100 live programs: 0
+store: attempt to set property on null value, line 4, with source text
+call: `o.missing` is not a function, got null instead, line 5, with source text
+store, other directory: attempt to set property on null value, line 4, with source text
+store, file removed: attempt to set property on null value, line 4, no source text
+call, file removed: left-hand side is not a function, got null instead, line 5, no source text
+Unable to compile source file 'files/broken.uc':
+
+  | Syntax error: Expecting variable name
+  | In line 2, byte 5:
+  |
+  |  `let = 2;`
+  |       ^-- Near here
+open files at the end: 0
+-- End --

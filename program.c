@@ -786,12 +786,7 @@ read_sourceinfo(uc_source_t *input, uint32_t flags, char **errp, uc_program_t *p
 				source = uc_source_new_buffer(path, code, len);
 			}
 			else {
-				source = uc_source_new_file(path);
-
-				if (!source) {
-					fprintf(stderr, "Unable to open source file %s: %s\n", path, strerror(errno));
-					source = uc_source_new_buffer(path, xstrdup(""), 0);
-				}
+				source = uc_source_new_path(path);
 			}
 
 			if (!read_vector(input, &source->lineinfo, "sourceinfo lineinfo", errp)) {

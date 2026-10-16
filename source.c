@@ -46,6 +46,7 @@ uc_source_new_file(const char *path)
 
 	src = uc_source_alloc(path);
 	src->fp = fp;
+	src->path = realpath(path, NULL);
 
 	return src;
 }
@@ -66,13 +67,80 @@ uc_source_new_buffer(const char *name, char *buf, size_t len)
 	return src;
 }
 
+uc_source_t *
+uc_source_new_path(const char *path)
+{
+	uc_source_t *src = uc_source_alloc(path);
+
+	src->path = realpath(path, NULL);
+
+	return src;
+}
+
 /* Number of source bytes lent to the lexer per block read. */
 #define UC_SOURCE_BLOCKSIZE 128
+
+/* The file is opened again after the working directory can have changed, so
+ * a source keeps the absolute path that was valid when it was created. */
+static FILE *
+uc_source_file_open(uc_source_t *source)
+{
+	return fopen(source->path ? source->path : source->filename, "rb");
+}
+
+/* Make sure the stream is open. A source holds its file open only while it is
+ * being read, so that the number of live programs does not count against the
+ * limit on open files. */
+static bool
+uc_source_stream_ensure(uc_source_t *source)
+{
+	if (!source->fp)
+		source->fp = uc_source_file_open(source);
+
+	return source->fp != NULL;
+}
+
+/* The end of the text was reached, or reading it failed. Buffer backed
+ * sources have nothing to close, but they are done all the same. */
+static void
+uc_source_stream_finish(uc_source_t *source)
+{
+	source->done = true;
+
+	if (source->buffer || !source->fp)
+		return;
+
+	fclose(source->fp);
+	source->fp = NULL;
+}
+
+void
+uc_source_reset(uc_source_t *source)
+{
+	free(source->rbuf);
+
+	source->rbuf = NULL;
+	source->off = 0;
+	source->done = false;
+
+	if (source->buffer) {
+		fseek(source->fp, 0, SEEK_SET);
+	}
+	else if (source->fp) {
+		fclose(source->fp);
+		source->fp = NULL;
+	}
+}
 
 const uint8_t *
 uc_source_read_block(uc_source_t *source, size_t *len, size_t *off)
 {
 	size_t rlen;
+
+	*len = 0;
+
+	if (source->done || !uc_source_stream_ensure(source))
+		return NULL;
 
 	if (!source->rbuf)
 		source->rbuf = xalloc(UC_SOURCE_BLOCKSIZE);
@@ -83,6 +151,9 @@ uc_source_read_block(uc_source_t *source, size_t *len, size_t *off)
 		*off = source->off;
 
 	source->off += rlen;
+
+	if (rlen < UC_SOURCE_BLOCKSIZE || feof(source->fp) || ferror(source->fp))
+		uc_source_stream_finish(source);
 
 	*len = rlen;
 
@@ -96,8 +167,16 @@ uc_source_read(uc_source_t *source, void *buf, size_t len)
 
 	errno = 0;
 
+	if (!len || source->done || !uc_source_stream_ensure(source))
+		return 0;
+
 	rlen = fread(buf, 1, len, source->fp);
 	source->off += rlen;
+
+	/* a short read leaves errno set if the read failed, and clear if the text
+	 * ended prematurely */
+	if (rlen < len || uc_source_remaining(source) == 0)
+		uc_source_stream_finish(source);
 
 	return rlen;
 }
@@ -111,43 +190,71 @@ uc_source_offset(uc_source_t *source)
 size_t
 uc_source_remaining(uc_source_t *source)
 {
+	FILE *fp;
 	long pos, end;
 
 	if (!source->sized) {
+		fp = source->fp ? source->fp : uc_source_file_open(source);
+
+		if (!fp)
+			return 0;
+
 		/* the size of text that cannot seek is not known, treat it as
 		 * unbounded */
 		source->size = SIZE_MAX;
 		source->sized = true;
 
-		pos = ftell(source->fp);
+		pos = ftell(fp);
 
-		if (pos >= 0 && fseek(source->fp, 0, SEEK_END) == 0) {
-			end = ftell(source->fp);
+		if (pos >= 0 && fseek(fp, 0, SEEK_END) == 0) {
+			end = ftell(fp);
 
 			if (end >= 0)
 				source->size = end;
 
-			fseek(source->fp, pos, SEEK_SET);
+			fseek(fp, pos, SEEK_SET);
 		}
+
+		if (fp != source->fp)
+			fclose(fp);
 	}
 
 	return (source->size > source->off) ? source->size - source->off : 0;
 }
 
-/* Random access to the text of a source for error messages and the debugger,
- * leaving the read position as found. */
+/* Random access to the text of a source for error messages. The text of a
+ * closed source is read from its path, which can be gone or differ from the
+ * file that was compiled. A file that was open is left positioned as found,
+ * one that was not is closed again. A path that names a pipe or a terminal
+ * by then has no text to show, and reading it would block. */
 static FILE *
-uc_source_text_open(uc_source_t *source, long *pos)
+uc_source_text_open(uc_source_t *source, bool *temp, long *pos)
 {
-	*pos = ftell(source->fp);
+	FILE *fp = source->fp ? source->fp : uc_source_file_open(source);
 
-	return (*pos != -1) ? source->fp : NULL;
+	*temp = (fp != source->fp);
+
+	if (!fp)
+		return NULL;
+
+	*pos = ftell(fp);
+
+	if (*pos != -1)
+		return fp;
+
+	if (*temp)
+		fclose(fp);
+
+	return NULL;
 }
 
 static void
-uc_source_text_close(uc_source_t *source, FILE *fp, long pos)
+uc_source_text_close(FILE *fp, bool temp, long pos)
 {
-	fseek(fp, pos, SEEK_SET);
+	if (temp)
+		fclose(fp);
+	else
+		fseek(fp, pos, SEEK_SET);
 }
 
 size_t
@@ -155,13 +262,13 @@ uc_source_read_line(uc_source_t *source, size_t off, char *line, size_t size,
                     size_t *lpos, bool *truncated)
 {
 	size_t len, rlen = 0, eline = 1;
-	bool cont = false;
+	bool temp, cont = false;
 	long pos;
 	FILE *fp;
 
 	*truncated = false;
 
-	if (size < 2 || !(fp = uc_source_text_open(source, &pos)))
+	if (size < 2 || !(fp = uc_source_text_open(source, &temp, &pos)))
 		return 0;
 
 	fseek(fp, 0, SEEK_SET);
@@ -174,7 +281,7 @@ uc_source_read_line(uc_source_t *source, size_t off, char *line, size_t size,
 			*truncated = cont;
 			*lpos = rlen - len;
 
-			uc_source_text_close(source, fp, pos);
+			uc_source_text_close(fp, temp, pos);
 
 			return eline;
 		}
@@ -186,7 +293,7 @@ uc_source_read_line(uc_source_t *source, size_t off, char *line, size_t size,
 		eline += !cont;
 	}
 
-	uc_source_text_close(source, fp, pos);
+	uc_source_text_close(fp, temp, pos);
 
 	return 0;
 }
@@ -196,10 +303,11 @@ uc_source_read_content(uc_source_t *source, size_t *len)
 {
 	size_t rlen, tlen = 0;
 	char *text = NULL;
+	bool temp;
 	long pos;
 	FILE *fp;
 
-	if (!(fp = uc_source_text_open(source, &pos)))
+	if (!(fp = uc_source_text_open(source, &temp, &pos)))
 		return NULL;
 
 	fseek(fp, 0, SEEK_SET);
@@ -210,7 +318,7 @@ uc_source_read_content(uc_source_t *source, size_t *len)
 		tlen += rlen;
 	} while (rlen == 4096);
 
-	uc_source_text_close(source, fp, pos);
+	uc_source_text_close(fp, temp, pos);
 
 	*len = tlen;
 
@@ -275,9 +383,13 @@ uc_source_free(uc_source_t *source)
 
 	uc_source_state_clear(source);
 
-	fclose(source->fp);
-	free(source->rbuf);
+	uc_source_reset(source);
+
+	if (source->buffer)
+		fclose(source->fp);
+
 	free(source->buffer);
+	free(source->path);
 }
 
 uc_source_type_t
@@ -285,9 +397,17 @@ uc_source_begin(uc_source_t *source)
 {
 	union { char s[sizeof(uint32_t)]; uint32_t n; } buf = { 0 };
 	uc_source_type_t type = UC_SOURCE_TYPE_PLAIN;
-	FILE *fp = source->fp;
 	size_t rlen;
+	FILE *fp;
 	int c = 0;
+
+	/* start over from the beginning of the text */
+	uc_source_reset(source);
+
+	if (!uc_source_stream_ensure(source))
+		return UC_SOURCE_TYPE_UNAVAILABLE;
+
+	fp = source->fp;
 
 	if (fread(buf.s, 1, 2, fp) == 2 && !strncmp(buf.s, "#!", 2)) {
 		source->off += 2;
@@ -319,6 +439,7 @@ uc_source_begin(uc_source_t *source)
 		}
 	}
 
+	/* leave the stream on the first byte of code */
 	if (fseek(fp, -(long)rlen, SEEK_CUR) == -1)
 		fprintf(stderr, "Failed to rewind source buffer: %s\n", strerror(errno));
 
@@ -694,6 +815,7 @@ expr_recover(uc_source_t *source, size_t end, size_t window, bool *cut)
 	size_t start, open = 0, len;
 	expr_t expr, *x = &expr;
 	char *tail;
+	bool temp;
 	long save;
 	FILE *fp;
 
@@ -706,7 +828,7 @@ expr_recover(uc_source_t *source, size_t end, size_t window, bool *cut)
 	x->cut = false;
 	x->win = xrealloc(NULL, x->len);
 
-	fp = uc_source_text_open(source, &save);
+	fp = uc_source_text_open(source, &temp, &save);
 
 	if (!fp) {
 		free(x->win);
@@ -716,13 +838,13 @@ expr_recover(uc_source_t *source, size_t end, size_t window, bool *cut)
 
 	if (fseek(fp, x->base, SEEK_SET) != 0 ||
 	    fread(x->win, 1, x->len, fp) != x->len) {
-		uc_source_text_close(source, fp, save);
+		uc_source_text_close(fp, temp, save);
 		free(x->win);
 
 		return NULL;
 	}
 
-	uc_source_text_close(source, fp, save);
+	uc_source_text_close(fp, temp, save);
 
 	start = expr_start(x, end, &open);
 	*cut = x->cut;
