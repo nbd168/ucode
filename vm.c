@@ -3710,6 +3710,12 @@ exception:
 			}
 		}
 
+		/* the compiler emits the exports of a module as one block, do not run
+		 * signal handlers inside of it, as an exception raised by one would
+		 * leave a part of the module instance behind */
+		if (insn == I_EXPORT && frame->ip[0] == I_EXPORT)
+			continue;
+
 		/* run handler for signal(s) delivered during previous instruction */
 		if (uc_vm_signal_dispatch(vm) != EXCEPTION_NONE)
 			goto exception;
