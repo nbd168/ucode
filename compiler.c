@@ -237,7 +237,15 @@ uc_compiler_set_srcpos(uc_compiler_t *compiler, size_t srcpos)
 	size_t delta;
 
 	/* ensure that lines counts are strictly increasing */
-	assert(srcpos == 0 || srcpos >= compiler->current_srcpos);
+	assert(srcpos == 0 || srcpos >= compiler->current_srcpos ||
+	       compiler->parser->error);
+
+	/* after a syntax error, code may be emitted for tokens in front of the
+	 * current position, e.g. after the expression of a template literal
+	 * placeholder has been terminated prematurely. The generated code is
+	 * discarded, but a negative offset would be taken for an enormous one */
+	if (srcpos < compiler->current_srcpos)
+		srcpos = 0;
 
 	delta = srcpos ? srcpos - compiler->current_srcpos : 0;
 	compiler->current_srcpos += delta;
