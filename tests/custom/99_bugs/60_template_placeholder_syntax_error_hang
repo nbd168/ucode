@@ -1,0 +1,49 @@
+A syntax error within the expression of a template literal placeholder
+made the compiler spin until it ran out of memory. The statement
+terminating the placeholder expression had advanced the source position
+beyond the last token of the expression, and instructions emitted for
+that token afterwards moved the position backwards. The negative offset
+was taken for an enormous one when recording the source position of the
+instruction, which then took practically forever and a lot of memory.
+
+1. Excess token in a placeholder.
+
+-- Testcase --
+x = `a${ 1 2 }`;
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stderr --
+Syntax error: Unexpected token
+Expecting '}'
+In line 1, byte 12:
+
+ `x = `a${ 1 2 }`;`
+  ~~~~~~~~~~~^
+
+
+-- End --
+
+
+2. Unterminated placeholder at the end of the source.
+
+-- Testcase --
+x = `tpl${
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stderr --
+Syntax error: Expecting expression
+In line 2, byte 1:
+
+ `x = `tpl${`
+            ^-- Near here
+
+
+-- End --
