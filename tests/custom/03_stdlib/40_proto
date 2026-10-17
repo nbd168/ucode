@@ -246,3 +246,43 @@ releases when it is freed or given another prototype.
 	"rejected": 0
 }
 -- End --
+
+
+Setting the prototype of a resource with an own prototype releases the
+previous one.
+
+-- Testcase --
+{%
+	let ffi;
+
+	try {
+		ffi = require("ffi");
+	}
+	catch (e) {
+		exit(77);
+	}
+
+	let getinfo = require("debug").getinfo;
+	let p = { x: 1 };
+	let q = { y: 2 };
+	let base = getinfo(p).refcount;
+	let counts = {};
+
+	proto(ffi.C, p);
+	counts.held = getinfo(p).refcount - base;
+
+	proto(ffi.C, q);
+	counts.released = getinfo(p).refcount - base;
+	counts.current = (proto(ffi.C) == q);
+
+	printf("%.J\n", counts);
+%}
+-- End --
+
+-- Expect stdout --
+{
+	"held": 1,
+	"released": 0,
+	"current": true
+}
+-- End --
