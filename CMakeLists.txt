@@ -9,6 +9,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CheckFunctionExists)
 include(CheckSymbolExists)
 include(CheckCSourceCompiles)
+include(CheckIPOSupported)
 include(GNUInstallDirs)
 
 option(BUILD_OPTIMIZE_SIZE "Optimize for size" ON)
@@ -50,6 +51,38 @@ add_compile_options(-fwrapv)
 option(BUILD_FUNCTION_SECTIONS "Compile with -ffunction-sections" ON)
 if(BUILD_FUNCTION_SECTIONS)
   add_compile_options(-ffunction-sections)
+endif()
+
+# Omit the async stack-unwind tables (.eh_frame) in release builds. ucode is
+# pure C with no exceptions and provides its own bytecode-level stack traces,
+# so these tables only serve external C-stack unwinding (backtrace(), C-level
+# crash reporters, profilers) and cost roughly 23 KB of the shared library.
+# Debug and RelWithDebInfo keep them to preserve native stack traces.
+option(BUILD_NO_UNWIND_TABLES "Omit async stack-unwind tables in release builds" ON)
+if(BUILD_NO_UNWIND_TABLES)
+  # listing several configurations in a single $<CONFIG:> expression requires
+  # CMake >= 3.19, so combine single-configuration expressions to stay
+  # compatible with the declared minimum CMake version
+  add_compile_options(
+    $<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:-fno-asynchronous-unwind-tables>
+  )
+endif()
+
+# Link-time optimization in release builds. Cross translation-unit dead code
+# elimination and folding of identical functions trims a further few percent
+# from libucode. Off by default: it lengthens builds and assumes a matching LTO
+# toolchain, so OpenWrt and default builds are unaffected unless requested.
+# Only Release and MinSizeRel are enabled, Debug and RelWithDebInfo are not.
+option(BUILD_LTO "Enable link-time optimization in release builds" OFF)
+if(BUILD_LTO)
+  check_ipo_supported(RESULT lto_supported OUTPUT lto_error)
+
+  if(lto_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL ON)
+  else()
+    message(WARNING "BUILD_LTO requested but IPO is unsupported: ${lto_error}")
+  endif()
 endif()
 
 check_c_source_compiles("
