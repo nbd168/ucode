@@ -52,6 +52,21 @@ if(BUILD_FUNCTION_SECTIONS)
   add_compile_options(-ffunction-sections)
 endif()
 
+# Omit the async stack-unwind tables (.eh_frame) in release builds. ucode is
+# pure C with no exceptions and provides its own bytecode-level stack traces,
+# so these tables only serve external C-stack unwinding (backtrace(), C-level
+# crash reporters, profilers) and cost roughly 23 KB of the shared library.
+# Debug and RelWithDebInfo keep them to preserve native stack traces.
+option(BUILD_NO_UNWIND_TABLES "Omit async stack-unwind tables in release builds" ON)
+if(BUILD_NO_UNWIND_TABLES)
+  # listing several configurations in a single $<CONFIG:> expression requires
+  # CMake >= 3.19, so combine single-configuration expressions to stay
+  # compatible with the declared minimum CMake version
+  add_compile_options(
+    $<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:-fno-asynchronous-unwind-tables>
+  )
+endif()
+
 check_c_source_compiles("
 int main() {
 #ifndef _FORTIFY_SOURCE
