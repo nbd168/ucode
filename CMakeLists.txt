@@ -9,6 +9,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(CheckFunctionExists)
 include(CheckSymbolExists)
 include(CheckCSourceCompiles)
+include(CheckIPOSupported)
 include(GNUInstallDirs)
 
 option(BUILD_OPTIMIZE_SIZE "Optimize for size" ON)
@@ -65,6 +66,23 @@ if(BUILD_NO_UNWIND_TABLES)
   add_compile_options(
     $<$<OR:$<CONFIG:Release>,$<CONFIG:MinSizeRel>>:-fno-asynchronous-unwind-tables>
   )
+endif()
+
+# Link-time optimization in release builds. Cross translation-unit dead code
+# elimination and folding of identical functions trims a further few percent
+# from libucode. Off by default: it lengthens builds and assumes a matching LTO
+# toolchain, so OpenWrt and default builds are unaffected unless requested.
+# Only Release and MinSizeRel are enabled, Debug and RelWithDebInfo are not.
+option(BUILD_LTO "Enable link-time optimization in release builds" OFF)
+if(BUILD_LTO)
+  check_ipo_supported(RESULT lto_supported OUTPUT lto_error)
+
+  if(lto_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL ON)
+  else()
+    message(WARNING "BUILD_LTO requested but IPO is unsupported: ${lto_error}")
+  endif()
 endif()
 
 check_c_source_compiles("
