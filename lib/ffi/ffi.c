@@ -736,27 +736,72 @@ clib_extsym(CTState *cts, CType *ct, uc_value_t *name)
 }
 
 
-static bool
-uc_ctype_requires_ffi_struct(CTState *cts, CTypeID cid)
+/* Number of members a struct declares, including bitfields. */
+static size_t
+uc_ctype_member_count(CTState *cts, CType *ct)
 {
-	CType *ct = ctype_get(cts, cid);
-	CTInfo info = ct->info;
+	size_t count = 0;
+	CTypeID id;
 
-	switch (ctype_type(info)) {
-	case CT_ARRAY:
-		switch (cid) {
-		case CTID_COMPLEX_FLOAT:
-		case CTID_COMPLEX_DOUBLE:
-			return false;
-		}
+	for (id = ct->sib; id; id = ctype_get(cts, id)->sib)
+		if (ctype_isfield(ctype_get(cts, id)->info) ||
+		    ctype_isbitfield(ctype_get(cts, id)->info))
+			count++;
 
-		/* fall through */
+	return count;
+}
 
-	case CT_STRUCT:
-		return true;
+/*
+ * Number of type descriptors uc_ctype_to_ffi_type() allocates for a type: one
+ * per struct, plus one for each nested struct member. The closure context
+ * reserves one slab entry per counted descriptor, so a nested member missing
+ * here would make the caller write past the allocation.
+ */
+static size_t
+uc_ctype_count_ffi_types(CTState *cts, CTypeID cid)
+{
+	CType *ct = ctype_raw(cts, cid);
+	size_t count;
+	CTypeID id;
+
+	if (!ctype_isstruct(ct->info) || (ct->info & CTF_UNION))
+		return 0;
+
+	count = 1;
+
+	for (id = ct->sib; id; id = ctype_get(cts, id)->sib) {
+		CType *ctf = ctype_get(cts, id);
+		CType *field;
+
+		if (!ctype_isfield(ctf->info))
+			continue;
+
+		field = ctype_rawchild(cts, ctf);
+
+		count += uc_ctype_count_ffi_types(cts, ctype_typeid(cts, field));
 	}
 
-	return false;
+	return count;
+}
+
+/* Release a type descriptor synthesized by uc_ctype_to_ffi_type(), including
+ * the element vector and the descriptors of nested structures. */
+static void
+uc_ctype_free_ffi_type(ffi_type *st)
+{
+	if (!st)
+		return;
+
+	if (st->elements) {
+		if (st->type == FFI_TYPE_STRUCT)
+			for (ffi_type **element = st->elements; *element; element++)
+				if ((*element)->elements)
+					uc_ctype_free_ffi_type(*element);
+
+		free(st->elements);
+	}
+
+	free(st);
 }
 
 static ffi_type *
@@ -831,12 +876,65 @@ uc_ctype_to_ffi_type(CTState *cts, CTypeID cid, ffi_type *st, ffi_type **stmem)
 		/* fall through */
 
 	case CT_STRUCT:
-		if (!st)
+		if (!st) {
+			size_t count = uc_ctype_member_count(cts, ct), num = 0, id;
+			ffi_type **elements;
+
+			/* A union shares its storage while a libffi element vector describes
+			 * consecutive members whose sizes add up, so no descriptor exists
+			 * which passes a union the way the ABI passes one. */
+			if (!count || (info & CTF_UNION))
+				return NULL;
+
+			/* libffi requires a NULL terminated member vector: without one,
+			 * initialize_aggregate() cannot derive size and alignment and
+			 * ffi_prep_cif() dereferences the missing members. */
+			elements = xalloc((count + 1) * sizeof(ffi_type *));
+
+			for (id = ct->sib; id && num < count; id = ctype_get(cts, id)->sib) {
+				CType *ctf = ctype_get(cts, id);
+				CType *field;
+
+				if (!ctype_isfield(ctf->info) && !ctype_isbitfield(ctf->info))
+					continue;
+
+				if (ctype_isbitfield(ctf->info)) {
+					/* describe a bitfield by its storage class, so that the
+					 * descriptor goes on matching the plain memory layout */
+					elements[num++] = (ctype_bitbsz(ctf->info) <= 32)
+						? &ffi_type_uint32
+						: &ffi_type_uint64;
+
+					continue;
+				}
+
+				field = ctype_rawchild(cts, ctf);
+
+				/* a function member is stored as a pointer */
+				elements[num++] = ctype_isfunc(field->info)
+					? &ffi_type_pointer
+					: uc_ctype_to_ffi_type(cts, ctype_typeid(cts, field),
+					                       NULL, NULL);
+
+				if (!elements[num - 1]) {
+					free(elements);
+
+					return NULL;
+				}
+			}
+
+			elements[num] = NULL;
+
 			st = xalloc(sizeof(ffi_type));
+			st->elements = elements;
+		}
 
 		st->type = FFI_TYPE_STRUCT;
 		st->size = size;
-		st->alignment = ctype_align(info);
+
+		/* the alignment stored in a CType is a base 2 logarithm, libffi expects
+		 * the plain byte value */
+		st->alignment = (uint16_t)(1u << ctype_align(info));
 
 		if (stmem)
 			*stmem = st;
@@ -1680,21 +1778,16 @@ uc_ctype_count_custom_types(CTState *cts, CType *funcspec, CTypeID argtype)
 	size_t n_custom_types = 0;
 
 	/* check whether return value requires a custom ffi type */
-	if (uc_ctype_requires_ffi_struct(cts, ctype_cid(funcspec->info)))
-		n_custom_types++;
+	n_custom_types += uc_ctype_count_ffi_types(cts, ctype_cid(funcspec->info));
 
-	while (true) {
-		if (!argtype)
-			break;
-
+	while (argtype) {
 		CType *ctf = ctype_get(cts, argtype);
 
 		assert(ctype_isfield(ctf->info));
 
 		argtype = ctf->sib;
 
-		if (uc_ctype_requires_ffi_struct(cts, ctype_cid(ctf->info)))
-			n_custom_types++;
+		n_custom_types += uc_ctype_count_ffi_types(cts, ctype_cid(ctf->info));
 	}
 
 	return n_custom_types;
@@ -1926,13 +2019,13 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 #endif
 
 	case FFI_OK:
-		free(stype);
+		uc_ctype_free_ffi_type(stype);
 
 		return context;
 	}
 
 out:
-	free(stype);
+	uc_ctype_free_ffi_type(stype);
 	ffi_closure_free(context);
 
 	return NULL;
@@ -2468,11 +2561,11 @@ uc_ctype_call(uc_vm_t *vm, size_t nargs)
 	}
 
 out:
-	free(stype);
+	uc_ctype_free_ffi_type(stype);
 
 	while (argtypes.count)
 		if (argtypes.entries[--argtypes.count]->type == FFI_TYPE_STRUCT)
-			free(argtypes.entries[argtypes.count]);
+			uc_ctype_free_ffi_type(argtypes.entries[argtypes.count]);
 
 	while (argmem.count) {
 		void *ptr = argmem.entries[--argmem.count];

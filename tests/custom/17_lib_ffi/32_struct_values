@@ -1,0 +1,147 @@
+A structure taken by value is described to libffi by a type descriptor which has
+to match the memory layout the ABI uses: a NULL terminated vector of its
+members, and a plain byte alignment rather than the base 2 logarithm the CType
+stores. Without the vector, initialize_aggregate() cannot derive size and
+alignment and ffi_prep_cif() dies while dereferencing the absent members.
+
+A system library offers no entry point taking a caller defined structure, so
+each testcase ships the source of one, compiles it with cc, and abstains when
+no C compiler is available.
+
+Compare two structures taken by value.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        struct point { int x; int y; };
+        int uctest_cmp_val(struct point a, struct point b);
+    `);
+
+    // Two structures in one signature are only placed at the offsets the ABI
+    // uses when the descriptor carries an alignment of eight bytes rather than
+    // the logarithm of it.
+    print("equal: ", lib.uctest_cmp_val({ x: 1, y: 2 }, { x: 1, y: 2 }), "\n");
+    print("less:  ", lib.uctest_cmp_val({ x: 1, y: 2 }, { x: 3, y: 4 }), "\n");
+    print("more:  ", lib.uctest_cmp_val({ x: 3, y: 4 }, { x: 1, y: 2 }), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+struct point {
+	int x;
+	int y;
+};
+
+int
+uctest_cmp_val(struct point a, struct point b)
+{
+	if (a.x != b.x)
+		return a.x < b.x ? -1 : 1;
+
+	return a.y == b.y ? 0 : (a.y < b.y ? -1 : 1);
+}
+-- End --
+
+-- Expect stdout --
+equal: 0
+less:  -1
+more:  1
+-- End --
+
+
+Add up the members of a nested structure taken by value.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        struct point { int x; int y; };
+        struct nested { struct point p; long sum; };
+        long uctest_nested_val(struct nested n);
+    `);
+
+    // A nested structure is a member like any other, so the vector has to be
+    // built all the way down.
+    print("nested: ", lib.uctest_nested_val({ p: { x: 1, y: 2 }, sum: 30 }), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+struct point {
+	int x;
+	int y;
+};
+
+struct nested {
+	struct point p;
+	long sum;
+};
+
+long
+uctest_nested_val(struct nested n)
+{
+	return n.p.x + n.p.y + n.sum;
+}
+-- End --
+
+-- Expect stdout --
+nested: 33
+-- End --
+
+
+Read the members of a wide structure taken by value.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        struct wide { long a; long b; long c; };
+        long uctest_wide_val(struct wide w);
+    `);
+
+    // A structure too large for the general purpose registers is passed on the
+    // stack, where the ABI only finds it if the descriptor's size and
+    // alignment describe its memory layout.
+    print("wide: ", lib.uctest_wide_val({ a: 1, b: 2, c: 3 }), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+struct wide {
+	long a;
+	long b;
+	long c;
+};
+
+long
+uctest_wide_val(struct wide w)
+{
+	return w.a * 10000 + w.b * 100 + w.c;
+}
+-- End --
+
+-- Expect stdout --
+wide: 10203
+-- End --
