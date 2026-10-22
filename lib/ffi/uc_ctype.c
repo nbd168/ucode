@@ -714,6 +714,16 @@ uc_value_t *uc_ctype_repr_complex(void *sp, CTSize size)
 {
 	uc_stringbuf_t *sb = ucv_stringbuf_new();
 	TValue re, im;
+
+	/* Only the three complex widths are representable. Anything else must not
+	 * fall through to the float case below, since reinterpreting the value
+	 * turns the re / im conversions back into an array read and recurses until
+	 * the stack is exhausted. */
+	if (size != 2 * sizeof(float) &&
+	    size != 2 * sizeof(double) &&
+	    size != 2 * sizeof(long double))
+		return ucv_string_new("?");
+
 	if (size == 2 * sizeof(double))
 	{
 		re.n = *(double *)sp;
