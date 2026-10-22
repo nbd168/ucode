@@ -1,0 +1,211 @@
+A closure describes the types of its own signature, and does so for as long as
+it can still be invoked. Storage shared with the surrounding call cannot be used
+for that: it holds one entry per top level type, so a structure gets described
+through the entry of whichever type was converted into it before and is left
+with that type's size and alignment, which makes ffi_prep_cif() place the
+argument wrongly and die while reading the descriptor.
+
+The descriptors a closure synthesized belong to it rather than to the call which
+happened to create it, since it is invoked long after that call returned.
+
+A system library offers no entry point taking a caller defined structure, so
+each testcase ships the source of one, compiles it with cc, and abstains when
+no C compiler is available.
+
+Add up the members of two structures supplied to a callback.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        struct point { int x; int y; };
+        struct wide { long a; long b; };
+
+        int uctest_pick(int (*cmp)(struct point a, struct point b),
+                        struct point a, struct point b);
+        long uctest_pick_wide(long (*cmp)(struct wide w), long a, long b);
+    `);
+
+    // A structure as an argument of a closure is what cannot be described
+    // through the storage of the enclosing call: that storage holds one entry
+    // per top level type, so the structure would be described through the
+    // entry of whichever type was converted into it before.
+    print("picked: ", lib.uctest_pick(
+        (a, b) => (a.x + a.y) - (b.x + b.y),
+        { x: 1, y: 2 },
+        { x: 3, y: 4 }), "\n");
+
+    print("wide: ", lib.uctest_pick_wide(
+        (w) => w.a * 1000 + w.b, 7, 3), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+struct point {
+	int x;
+	int y;
+};
+
+struct wide {
+	long a;
+	long b;
+};
+
+int
+uctest_pick(int (*cmp)(struct point a, struct point b),
+            struct point a, struct point b)
+{
+	return cmp(a, b);
+}
+
+long
+uctest_pick_wide(long (*cmp)(struct wide w), long a, long b)
+{
+	struct wide w = { a, b };
+
+	return cmp(w);
+}
+-- End --
+
+-- Expect stdout --
+picked: -4
+wide: 7003
+-- End --
+
+
+Compare two structures supplied to a sorting callback.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        struct point { int x; int y; };
+        void uctest_sort(struct point *base, size_t n,
+                         int (*compar)(const void *, const void *));
+    `);
+
+    let arr = ffi.ctype('struct point[4]',
+        [{ x: 3, y: 1 }, { x: 1, y: 9 }, { x: 2, y: 0 }, { x: 0, y: 5 }]);
+
+    lib.uctest_sort(arr.ptr(), 4,
+        (a, b) => a.deref('struct point').x - b.deref('struct point').x);
+
+    let order = [];
+
+    for (let i = 0; i < 4; i++)
+        push(order, `${arr[i].x},${arr[i].y}`);
+
+    print("sorted: ", join(" ", order), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+#include <stddef.h>
+
+struct point {
+	int x;
+	int y;
+};
+
+void
+uctest_sort(struct point *base, size_t n,
+            int (*compar)(const void *, const void *))
+{
+	for (size_t i = 1; i < n; i++)
+		for (size_t j = i; j > 0 && compar(&base[j - 1], &base[j]) > 0; j--) {
+			struct point t = base[j - 1];
+
+			base[j - 1] = base[j];
+			base[j] = t;
+		}
+}
+-- End --
+
+-- Expect stdout --
+sorted: 0,5 1,9 2,0 3,1
+-- End --
+
+
+Invoke one closure again after the call which created it returned.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        struct point { int x; int y; };
+        void uctest_sort(struct point *base, size_t n,
+                         int (*compar)(const void *, const void *));
+    `);
+
+    let arr = ffi.ctype('struct point[3]',
+        [{ x: 2, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 2 }]);
+
+    // The closure outlives every single call below, so the descriptors it
+    // synthesized for its own argument types belong to it and cannot be
+    // released along the first of them.
+    let cmp = ffi.closure('int (*)(const void *, const void *)',
+        (a, b) => a.deref('struct point').x - b.deref('struct point').x);
+
+    let rounds = [];
+
+    for (let round = 0; round < 3; round++) {
+        lib.uctest_sort(arr.ptr(), 3, cmp);
+
+        let sorted = [];
+
+        for (let i = 0; i < 3; i++)
+            push(sorted, `${arr[i].x},${arr[i].y}`);
+
+        push(rounds, join(",", sorted));
+    }
+
+    print("rounds: ", join(" | ", rounds), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+#include <stddef.h>
+
+struct point {
+	int x;
+	int y;
+};
+
+void
+uctest_sort(struct point *base, size_t n,
+            int (*compar)(const void *, const void *))
+{
+	for (size_t i = 1; i < n; i++)
+		for (size_t j = i; j > 0 && compar(&base[j - 1], &base[j]) > 0; j--) {
+			struct point t = base[j - 1];
+
+			base[j - 1] = base[j];
+			base[j] = t;
+		}
+}
+-- End --
+
+-- Expect stdout --
+rounds: 0,1,1,2,2,0 | 0,1,1,2,2,0 | 0,1,1,2,2,0
+-- End --
