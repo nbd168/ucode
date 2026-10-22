@@ -558,6 +558,21 @@ if(NOT UCODE_WASM)
       target_compile_definitions(ffi_lib PRIVATE HAVE_FFI_BAD_ARGTYPE)
     endif()
 
+    # A backend provides the predefined complex number types only when it
+    # defines FFI_TARGET_HAS_COMPLEX_TYPE, which powerpc does not. Only declare
+    # the symbols, as the check may compile to a static library when cross
+    # compiling, where referencing them would not be caught by the linker.
+    check_c_source_compiles("
+      #include <ffi.h>
+      ffi_type *types[] = { &ffi_type_complex_float, &ffi_type_complex_double,
+                            &ffi_type_complex_longdouble };
+      int main() { return types != 0; }
+    " HAVE_FFI_COMPLEX_TYPES)
+
+    if(HAVE_FFI_COMPLEX_TYPES)
+      target_compile_definitions(ffi_lib PRIVATE HAVE_FFI_COMPLEX_TYPES)
+    endif()
+
     target_link_options(ffi_lib PRIVATE ${UCODE_MODULE_LINK_OPTIONS})
     target_link_libraries(ffi_lib ${LIBFFI_LINK_LIBRARIES})
   endif()

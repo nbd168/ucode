@@ -778,6 +778,13 @@ uc_ffi_type_is_predefined(const ffi_type *st)
 		&ffi_type_float,   &ffi_type_double,
 		&ffi_type_longdouble,
 		&ffi_type_pointer,
+
+#ifdef HAVE_FFI_COMPLEX_TYPES
+		/* guarded by FFI_TARGET_HAS_COMPLEX_TYPE, hence probed for */
+		&ffi_type_complex_float,
+		&ffi_type_complex_double,
+		&ffi_type_complex_longdouble,
+#endif
 	};
 	size_t i;
 
@@ -866,6 +873,7 @@ uc_ctype_to_ffi_type(CTState *cts, CTypeID cid, ffi_type *st, ffi_type **stmem)
 		return &ffi_type_pointer;
 
 	case CT_ARRAY:
+#ifdef HAVE_FFI_COMPLEX_TYPES
 		switch (cid) {
 		case CTID_COMPLEX_FLOAT:
 			return &ffi_type_complex_float;
@@ -873,6 +881,20 @@ uc_ctype_to_ffi_type(CTState *cts, CTypeID cid, ffi_type *st, ffi_type **stmem)
 		case CTID_COMPLEX_DOUBLE:
 			return &ffi_type_complex_double;
 		}
+#else
+		/* The predefined complex number types are unavailable: a backend provides
+		 * them only when it defines FFI_TARGET_HAS_COMPLEX_TYPE. They cannot be
+		 * described as a struct of two reals instead, since libffi passes such a
+		 * description differently than the predefined type, so reject such
+		 * declarations rather than pass bogus values. Plain arrays go on being
+		 * described by the structure case below. */
+		if (ctype_iscomplex(info)) {
+			uc_vm_raise_exception(cts->vm, EXCEPTION_TYPE,
+				"complex number types are not supported by this libffi build");
+
+			return NULL;
+		}
+#endif
 
 		/* fall through */
 
