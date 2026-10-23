@@ -10,13 +10,16 @@ description that would pass bogus values.
 
 A system library offers no entry point of a caller's choosing that takes a
 complex number, so each testcase ships the source of one, compiles it with cc,
-and abstains when no C compiler is available.
+and abstains when no C compiler or predefined libffi complex type is available.
 
 Take a complex number by value.
 
 -- Testcase --
 {%
     import * as ffi from 'ffi';
+
+    if (ffi.C.dlsym('ffi_type_complex_double') == null)
+        exit(77);
 
     let src = TESTFILES_PATH + '/uctestlib.c';
     let so = TESTFILES_PATH + '/uctestlib.so';
@@ -59,6 +62,9 @@ Take two complex numbers by value.
 {%
     import * as ffi from 'ffi';
 
+    if (ffi.C.dlsym('ffi_type_complex_double') == null)
+        exit(77);
+
     let src = TESTFILES_PATH + '/uctestlib.c';
     let so = TESTFILES_PATH + '/uctestlib.so';
 
@@ -90,6 +96,9 @@ Scale a complex number by a double following it.
 -- Testcase --
 {%
     import * as ffi from 'ffi';
+
+    if (ffi.C.dlsym('ffi_type_complex_double') == null)
+        exit(77);
 
     let src = TESTFILES_PATH + '/uctestlib.c';
     let so = TESTFILES_PATH + '/uctestlib.so';
