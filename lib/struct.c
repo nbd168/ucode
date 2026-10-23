@@ -1421,17 +1421,8 @@ native_pack_ubyte(uc_vm_t *vm, char *p, uc_value_t *v, const formatdef_t *f)
 static bool
 native_pack_char(uc_vm_t *vm, char *p, uc_value_t *v, const formatdef_t *f)
 {
-	char *s = NULL;
-
-	if (ucv_type(v) == UC_STRING) {
-		s = ucv_string_get(v);
-		*p = *s;
-	}
-	else {
-		s = ucv_to_string(vm, v);
-		*p = *s;
-		free(s);
-	}
+	/* non-string values are converted by uc_pack_common() */
+	*p = *ucv_string_get(v);
 
 	return true;
 }
@@ -2872,7 +2863,7 @@ static bool
 uc_pack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state, size_t argoff,
                void **buf, size_t *pos, size_t *capacity)
 {
-	size_t ncode, arg, off, new_pos;
+	size_t ncode, arg, off, start, new_pos;
 	formatcode_t *code;
 	ssize_t size, n;
 	const void *p;
@@ -2924,7 +2915,14 @@ uc_pack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state, size_t argoff,
 		}
 	}
 
-	new_pos = *pos + state->size + off;
+	/*
+	 * Converting a value for the 'c' format may invoke a tostring()
+	 * callback which can move, reallocate or pull the buffer, so keep
+	 * the start position and derive each destination from the current
+	 * buffer instead of holding pointers into it.
+	 */
+	start = *pos;
+	new_pos = start + state->size + off;
 
 	if (!grow_buffer(vm, buf, capacity, new_pos))
 		return NULL;
@@ -2933,11 +2931,12 @@ uc_pack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state, size_t argoff,
 	     ncode < state->ncodes;
 	     code = &state->codes[++ncode]) {
 		const formatdef_t *e = code->fmtdef;
-		char *res = *buf + sizeof(uc_string_t) + *pos + code->offset + off;
+		size_t res_off = sizeof(uc_string_t) + start + code->offset + off;
 		ssize_t j = code->repeat;
 
 		while (j--) {
 			uc_value_t *v = uc_fn_arg(argoff++);
+			char *res = *buf + res_off;
 
 			size = code->size;
 
@@ -3075,12 +3074,28 @@ uc_pack_common(uc_vm_t *vm, size_t nargs, formatstate_t *state, size_t argoff,
 				if (size == -1 || len < (size_t)size)
 					size = len;
 			}
+			else if (e->format == 'c' && ucv_type(v) != UC_STRING) {
+				char *s = ucv_to_string(vm, v);
+				char c = *s;
+
+				free(s);
+
+				/* the callback may have raised an exception or exited
+				 * and released the buffer along with the VM stack */
+				if (vm->exception.type != EXCEPTION_NONE)
+					return false;
+
+				if (!grow_buffer(vm, buf, capacity, new_pos))
+					return false;
+
+				*((char *)*buf + res_off) = c;
+			}
 			else {
 				if (!e->pack(vm, res, v, e))
 					return false;
 			}
 
-			res += size;
+			res_off += size;
 		}
 	}
 

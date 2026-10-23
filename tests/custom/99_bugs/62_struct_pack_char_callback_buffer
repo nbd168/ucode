@@ -1,0 +1,210 @@
+Packing a non-string value with the `c` format converts it through its
+tostring() callback. The destination address within the buffer was
+computed before invoking the callback, so a callback growing, moving or
+pulling the buffer made packing write to freed or foreign memory. An
+exception or exit() pending once the conversion returned did not stop
+packing either.
+
+1. A callback growing the buffer must not leave the character written to
+the old allocation.
+
+-- Testcase --
+let struct;
+
+try {
+	struct = require('struct');
+}
+catch (e) {
+	exit(77);
+}
+
+let b = struct.buffer('AB');
+let value = proto({}, { tostring: () => {
+	b.length(262144);
+	gc();
+
+	return 'Z';
+} });
+
+b.put('cB', value, 7);
+print(hexenc(b.slice(0, 4)), ':', b.pos(), ':', b.length(), '\n');
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+5a070000:2:262144
+-- End --
+
+
+2. Repeated characters and subsequent fields keep their offsets when
+callbacks grow the buffer or move its position, in all byte orders.
+
+-- Testcase --
+let struct;
+
+try {
+	struct = require('struct');
+}
+catch (e) {
+	exit(77);
+}
+
+for (let order in [ '', '@', '=', '<', '>', '!' ]) {
+	let b = struct.buffer('ABCD');
+	b.pos(1);
+
+	let first = proto({}, { tostring: () => {
+		b.length(262144);
+
+		return 'Z';
+	} });
+
+	let second = proto({}, { tostring: () => {
+		b.length(524288);
+		b.pos(4096);
+		gc();
+
+		return 'Y';
+	} });
+
+	b.put(order + '2cB', first, second, 7);
+	print(hexenc(b.slice(0, 4)), ':', b.pos(), ':', b.length(), '\n');
+}
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+415a5907:4:524288
+415a5907:4:524288
+415a5907:4:524288
+415a5907:4:524288
+415a5907:4:524288
+415a5907:4:524288
+-- End --
+
+
+3. A callback pulling the buffer contents must not see the returned
+string modified, packing continues in a newly allocated buffer.
+
+-- Testcase --
+let struct;
+
+try {
+	struct = require('struct');
+}
+catch (e) {
+	exit(77);
+}
+
+let b = struct.buffer('ABCD');
+let saved;
+
+b.pos(1);
+b.put('cB', proto({}, { tostring: () => {
+	saved = b.pull();
+	gc();
+
+	return 'Z';
+} }), 7);
+
+print(hexenc(saved), '\n');
+print(hexenc(b.slice()), ':', b.pos(), ':', b.length(), '\n');
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+41424344
+005a07:3:3
+-- End --
+
+
+4. An exception pending after the conversion stops packing without
+invoking callbacks of further fields, previous writes are retained and
+the buffer stays usable.
+
+-- Testcase --
+let struct;
+
+try {
+	struct = require('struct');
+}
+catch (e) {
+	exit(77);
+}
+
+let b = struct.buffer('ABCD');
+
+try {
+	b.put('B2c', 7,
+		proto({}, { tostring: () => {
+			b.length(262144);
+			gc();
+			die('conversion failed');
+		} }),
+		proto({}, { tostring: () => {
+			print('unexpected callback\n');
+
+			return 'Y';
+		} }));
+}
+catch (e) {
+	print(e.message, '\n');
+}
+
+print(hexenc(b.slice(0, 4)), ':', b.pos(), ':', b.length(), '\n');
+
+b.put('c', 'Z');
+print(hexenc(b.slice(0, 4)), ':', b.pos(), '\n');
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+conversion failed
+07424344:0:262144
+5a424344:1
+-- End --
+
+
+5. Calling exit() within a callback releases a temporary buffer along
+with the VM stack, packing must not access it afterwards.
+
+-- Testcase --
+let struct;
+
+try {
+	struct = require('struct');
+}
+catch (e) {
+	exit(77);
+}
+
+struct.buffer().put('2c',
+	proto({}, { tostring: () => exit(3) }),
+	proto({}, { tostring: () => {
+		print('unexpected callback\n');
+
+		return 'Y';
+	} }));
+
+print('not reached\n');
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect exitcode --
+3
+-- End --
