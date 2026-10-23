@@ -1,0 +1,59 @@
+Decoding base64 data with the `Z` format of the struct module hung when
+whitespace followed a padding character. The loops skipping whitespace
+after the first and after the last `=` never advanced the read position,
+so they spun forever on the first whitespace character, which made a
+trailing newline in otherwise valid base64 input hang the program.
+
+1. Whitespace after the final padding character.
+
+-- Testcase --
+let struct;
+
+try {
+	struct = require('struct');
+}
+catch (e) {
+	exit(77);
+}
+
+for (let input in [ 'Zm8= ', 'Zm8=\n', 'Zg==\t', 'Zm9vYg==\r\n' ])
+	print(hexenc(struct.pack('Z', input)), "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+666f
+666f
+66
+666f6f62
+-- End --
+
+
+2. Whitespace between two padding characters.
+
+-- Testcase --
+let struct;
+
+try {
+	struct = require('struct');
+}
+catch (e) {
+	exit(77);
+}
+
+for (let input in [ 'Zg= =', 'Zg=\n=', 'Zg=\t \r\n=\n' ])
+	print(hexenc(struct.pack('Z', input)), "\n");
+-- End --
+
+-- Args --
+-R
+-- End --
+
+-- Expect stdout --
+66
+66
+66
+-- End --
