@@ -1822,16 +1822,75 @@ ucv_to_json(uc_value_t *uv)
 	return NULL;
 }
 
+/*
+ * Length of the UTF-8 sequence starting at s, or zero if the bytes there
+ * do not form a valid RFC 3629 sequence: no overlong forms, no surrogates,
+ * no codepoints above U+10FFFF and the sequence must not be truncated at
+ * the end of the len bytes. Only the len bytes at s are accessed.
+ */
+static size_t
+utf8_sequence_length(const char *s, size_t len)
+{
+	const uint8_t *b = (const uint8_t *)s;
+	size_t size, k;
+	uint8_t low = 0x80, high = 0xbf;
+	uint8_t first = b[0];
+
+	if (first < 0x80)
+		return 1;
+
+	if (first >= 0xc2 && first <= 0xdf) {
+		size = 2;
+	}
+	else if (first >= 0xe0 && first <= 0xef) {
+		size = 3;
+
+		if (first == 0xe0)
+			low = 0xa0;
+		else if (first == 0xed)
+			high = 0x9f;
+	}
+	else if (first >= 0xf0 && first <= 0xf4) {
+		size = 4;
+
+		if (first == 0xf0)
+			low = 0x90;
+		else if (first == 0xf4)
+			high = 0x8f;
+	}
+	else {
+		return 0;
+	}
+
+	if (size > len)
+		return 0;
+
+	for (k = 1; k < size; k++) {
+		if (b[k] < low || b[k] > high)
+			return 0;
+
+		low = 0x80;
+		high = 0xbf;
+	}
+
+	return size;
+}
+
 static void
 ucv_to_string_json_encoded(uc_stringbuf_t *pb, const char *s, size_t len, bool regexp)
 {
-	size_t i;
+	size_t i, size = 0;
 
 	if (!regexp)
 		ucv_stringbuf_append(pb, "\"");
 
-	for (i = 0; s != NULL && i < len; i++, s++) {
-		switch (*s) {
+	for (i = 0; s != NULL && i < len; i++) {
+		/* index-based rather than advancing `s` alongside `i`, since the
+		 * default case may consume more than one byte per iteration and the
+		 * two would otherwise drift apart */
+		const uint8_t *b = (const uint8_t *)s + i;
+
+		switch (*b) {
 		case '"':
 			ucv_stringbuf_append(pb, "\\\"");
 			break;
@@ -1865,10 +1924,33 @@ ucv_to_string_json_encoded(uc_stringbuf_t *pb, const char *s, size_t len, bool r
 			break;
 
 		default:
-			if ((unsigned char)*s < 0x20)
-				ucv_stringbuf_printf(pb, "\\u%04x", (unsigned char)*s);
+			if (*b < 0x20) {
+				ucv_stringbuf_printf(pb, "\\u%04x", *b);
+
+				break;
+			}
+
+			if (*b < 0x80) {
+				ucv_stringbuf_addstr(pb, s + i, 1);
+
+				break;
+			}
+
+			/* Bytes >= 0x80 are either part of a valid UTF-8 sequence, in
+			 * which case the whole sequence is passed through, or invalid
+			 * UTF-8, in which case the byte is replaced by the unicode
+			 * replacement character so that the encoded JSON remains valid
+			 * UTF-8 no matter which bytes the string contains.
+			 */
+			size = utf8_sequence_length(s + i, len - i);
+
+			if (size > 0) {
+				ucv_stringbuf_addstr(pb, s + i, size);
+
+				i += size - 1;
+			}
 			else
-				ucv_stringbuf_addstr(pb, s, 1);
+				ucv_stringbuf_addstr(pb, "\\ufffd", 6);
 
 			break;
 		}

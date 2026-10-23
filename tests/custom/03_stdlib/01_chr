@@ -22,6 +22,6 @@ passed to the `chr()` function.
 [
 	"",
 	"abc",
-	"\u0000\u0000\u0000\u0000\u0000ABÿ"
+	"\u0000\u0000\u0000\u0000\u0000AB\ufffd"
 ]
 -- End --
