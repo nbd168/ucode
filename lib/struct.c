@@ -2730,7 +2730,7 @@ b64dec(char *dest, size_t *dest_len, const char *src, size_t src_len,
 		case BYTE3:		/* Valid, means one byte of info */
 			ch = 0;
 
-			while (src_off < src_len) {
+			for (; src_off < src_len; src_off++) {
 				ch = (unsigned char)src[src_off];
 
 				if (!isspace(ch))
@@ -2751,7 +2751,7 @@ b64dec(char *dest, size_t *dest_len, const char *src, size_t src_len,
 			 * We know this char is an =.  Is there anything but
 			 * whitespace after it?
 			 */
-			while (src_off < src_len)
+			for (; src_off < src_len; src_off++)
 				if (!isspace(src[src_off]))
 					return *errp = "Trailing data", false;
 
