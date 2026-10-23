@@ -1,0 +1,110 @@
+JSON encoding (`%J`) must produce valid UTF-8 output no matter which bytes
+the encoded strings contain: strings holding valid UTF-8 sequences are
+encoded verbatim, while bytes that do not form a valid UTF-8 sequence are
+replaced by the unicode replacement character `\ufffd`. This keeps module
+and command output containing binary data (e.g. file contents) parseable
+by consumers that require valid UTF-8.
+
+-- Testcase --
+{%
+	// valid UTF-8 is preserved verbatim, including the NUL byte
+	printf("%J\n", "plain text");
+	printf("%J\n", "caf" + chr(0xc3, 0xa9));
+	printf("%J\n", chr(0xe2, 0x82, 0xac));
+	printf("%J\n", chr(0xf0, 0x9f, 0x98, 0x80));
+	printf("%J\n", "a\0b");
+	printf("%J\n", chr(0xc2, 0x80));
+	printf("%J\n", chr(0xf4, 0x8f, 0xbf, 0xbf));
+%}
+-- End --
+
+-- Expect stdout --
+"plain text"
+"café"
+"€"
+"😀"
+"a\u0000b"
+""
+"􏿿"
+-- End --
+
+
+Bytes that do not form a valid UTF-8 sequence are replaced by the unicode
+replacement character, one `\ufffd` per invalid byte.
+
+-- Testcase --
+{%
+	// lone high byte
+	printf("%J\n", "a" + chr(0xff) + "b");
+
+	// stray continuation byte
+	printf("%J\n", "a" + chr(0x80) + "b");
+
+	// truncated sequence at the end of the string
+	printf("%J\n", "a" + chr(0xc3));
+
+	// lead byte followed by an ASCII character
+	printf("%J\n", chr(0xe2, 0x82) + "x");
+
+	// overlong form
+	printf("%J\n", chr(0xc0, 0xaf));
+
+	// UTF-16 surrogate
+	printf("%J\n", chr(0xed, 0xa0, 0x80));
+
+	// codepoint above U+10FFFF
+	printf("%J\n", chr(0xf4, 0x90, 0x80, 0x80));
+
+	// only the invalid bytes are replaced, valid sequences around them
+	// are kept
+	printf("%J\n", chr(0xc3, 0xa9) + chr(0xff) + chr(0xc3, 0xa9));
+%}
+-- End --
+
+-- Expect stdout --
+"a\ufffdb"
+"a\ufffdb"
+"a\ufffd"
+"\ufffd\ufffdx"
+"\ufffd\ufffd"
+"\ufffd\ufffd\ufffd"
+"\ufffd\ufffd\ufffd\ufffd"
+"é\ufffdé"
+-- End --
+
+
+The replacement applies to strings nested in arrays and objects as well as
+to object keys.
+
+-- Testcase --
+{%
+	let key = "k" + chr(0xfe);
+	let o = {};
+
+	o.nested = { list: [ "x" + chr(0xfd), 1, true, null ] };
+	o.nested[key] = "v";
+
+	printf("%J\n", o);
+%}
+-- End --
+
+-- Expect stdout --
+{ "nested": { "list": [ "x\ufffd", 1, true, null ], "k\ufffd": "v" } }
+-- End --
+
+
+Strings without bytes above 0x7f are unaffected.
+
+-- Testcase --
+{%
+	printf("%J\n", sprintf("%c%c", 10, 255));
+	printf("%.1J\n", [ "a" + chr(0xc3, 0xa9) + chr(0xff) ]);
+%}
+-- End --
+
+-- Expect stdout --
+"\n\ufffd"
+[
+ "aé\ufffd"
+]
+-- End --
