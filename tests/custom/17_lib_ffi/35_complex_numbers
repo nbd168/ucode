@@ -1,0 +1,125 @@
+A complex number is one of libffi's predefined types. It cannot be described as
+a struct of two reals instead: libffi passes such a description differently than
+the predefined type, so which of the two a descriptor is decides whether a call
+passes the right values.
+
+A libffi backend provides the predefined complex types only when it defines
+FFI_TARGET_HAS_COMPLEX_TYPE, which powerpc does not, so where they are
+unavailable a declaration naming one is rejected rather than answered with a
+description that would pass bogus values.
+
+A system library offers no entry point of a caller's choosing that takes a
+complex number, so each testcase ships the source of one, compiles it with cc,
+and abstains when no C compiler is available.
+
+Take a complex number by value.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        double uctest_compl_real(double complex z);
+        double uctest_compl_imag(double complex z);
+    `);
+
+    print("real: ", lib.uctest_compl_real([3.0, 4.0]), "\n");
+    print("imag: ", lib.uctest_compl_imag([3.0, 4.0]), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+double
+uctest_compl_real(double _Complex z)
+{
+	return __real__ z;
+}
+
+double
+uctest_compl_imag(double _Complex z)
+{
+	return __imag__ z;
+}
+-- End --
+
+-- Expect stdout --
+real: 3
+imag: 4
+-- End --
+
+Take two complex numbers by value.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        double uctest_compl_add_real(double complex a, double complex b);
+    `);
+
+    print("sum: ", lib.uctest_compl_add_real([1.5, 0.0], [2.25, 0.0]), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+double
+uctest_compl_add_real(double _Complex a, double _Complex b)
+{
+	return __real__ a + __real__ b;
+}
+-- End --
+
+-- Expect stdout --
+sum: 3.75
+-- End --
+
+Scale a complex number by a double following it.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    let src = TESTFILES_PATH + '/uctestlib.c';
+    let so = TESTFILES_PATH + '/uctestlib.so';
+
+    if (system([ 'cc', '-shared', '-fPIC', '-o', so, src ]) != 0)
+        exit(77);
+
+    let lib = ffi.dlopen(so, false, `
+        double complex uctest_compl_scale(double complex z, double s);
+    `);
+
+    // A double following a complex number is only found where the ABI puts it
+    // when the complex argument is described by its predefined type.
+    print("scaled: ", lib.uctest_compl_scale([1.5, -2.5], 2.0), "\n");
+%}
+-- End --
+
+-- File uctestlib.c --
+double _Complex
+uctest_compl_scale(double _Complex z, double s)
+{
+	double _Complex r;
+
+	__real__ r = __real__ z * s;
+	__imag__ r = __imag__ z * s;
+
+	return r;
+}
+-- End --
+
+-- Expect stdout --
+scaled: [ 3.0, -5.0 ]
+-- End --

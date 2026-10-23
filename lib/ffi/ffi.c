@@ -736,27 +736,80 @@ clib_extsym(CTState *cts, CType *ct, uc_value_t *name)
 }
 
 
-static bool
-uc_ctype_requires_ffi_struct(CTState *cts, CTypeID cid)
+/* Number of members a struct declares, including bitfields. */
+static size_t
+uc_ctype_member_count(CTState *cts, CType *ct)
 {
-	CType *ct = ctype_get(cts, cid);
-	CTInfo info = ct->info;
+	size_t count = 0;
+	CTypeID id;
 
-	switch (ctype_type(info)) {
-	case CT_ARRAY:
-		switch (cid) {
-		case CTID_COMPLEX_FLOAT:
-		case CTID_COMPLEX_DOUBLE:
-			return false;
-		}
+	for (id = ct->sib; id; id = ctype_get(cts, id)->sib)
+		if (ctype_isfield(ctype_get(cts, id)->info) ||
+		    ctype_isbitfield(ctype_get(cts, id)->info))
+			count++;
 
-		/* fall through */
+	return count;
+}
 
-	case CT_STRUCT:
-		return true;
-	}
+/*
+ * A type descriptor either denotes one of the predefined types, which live in
+ * libffi itself, or it got synthesized for a struct or union. Only the latter
+ * belong to whoever requested them, hence only those may be released.
+ *
+ * Inspecting the descriptor cannot tell the two apart: FFI_TYPE_VOID has the
+ * value 0, so the kind of a descriptor says nothing, and neither does its size,
+ * which a structure of two 64 bit integers shares with ffi_type_longdouble on
+ * x86-64. Its identity does, and the predefined ones form a closed set.
+ *
+ * The addresses are not known until link time, so iterating over an array is
+ * both smaller and takes fewer relocations than comparing against each entry,
+ * which emits one load per entry.
+ */
+static bool
+uc_ffi_type_is_predefined(const ffi_type *st)
+{
+	static const ffi_type *const predefined[] = {
+		&ffi_type_void,
+		&ffi_type_uint8,   &ffi_type_sint8,
+		&ffi_type_uint16,  &ffi_type_sint16,
+		&ffi_type_uint32,  &ffi_type_sint32,
+		&ffi_type_uint64,  &ffi_type_sint64,
+		&ffi_type_uint,    &ffi_type_sint,
+		&ffi_type_float,   &ffi_type_double,
+		&ffi_type_longdouble,
+		&ffi_type_pointer,
+
+#ifdef HAVE_FFI_COMPLEX_TYPES
+		/* guarded by FFI_TARGET_HAS_COMPLEX_TYPE, hence probed for */
+		&ffi_type_complex_float,
+		&ffi_type_complex_double,
+		&ffi_type_complex_longdouble,
+#endif
+	};
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(predefined); i++)
+		if (st == predefined[i])
+			return true;
 
 	return false;
+}
+
+/* Release a type descriptor synthesized by uc_ctype_to_ffi_type(), including
+ * the element vector and the descriptors of nested structures. */
+static void
+uc_ctype_free_ffi_type(ffi_type *st)
+{
+	ffi_type **element;
+
+	if (!st || uc_ffi_type_is_predefined(st))
+		return;
+
+	for (element = st->elements; *element; element++)
+		uc_ctype_free_ffi_type(*element);
+
+	free(st->elements);
+	free(st);
 }
 
 static ffi_type *
@@ -820,6 +873,7 @@ uc_ctype_to_ffi_type(CTState *cts, CTypeID cid, ffi_type *st, ffi_type **stmem)
 		return &ffi_type_pointer;
 
 	case CT_ARRAY:
+#ifdef HAVE_FFI_COMPLEX_TYPES
 		switch (cid) {
 		case CTID_COMPLEX_FLOAT:
 			return &ffi_type_complex_float;
@@ -827,16 +881,83 @@ uc_ctype_to_ffi_type(CTState *cts, CTypeID cid, ffi_type *st, ffi_type **stmem)
 		case CTID_COMPLEX_DOUBLE:
 			return &ffi_type_complex_double;
 		}
+#else
+		/* The predefined complex number types are unavailable: a backend provides
+		 * them only when it defines FFI_TARGET_HAS_COMPLEX_TYPE. They cannot be
+		 * described as a struct of two reals instead, since libffi passes such a
+		 * description differently than the predefined type, so reject such
+		 * declarations rather than pass bogus values. Plain arrays go on being
+		 * described by the structure case below. */
+		if (ctype_iscomplex(info)) {
+			uc_vm_raise_exception(cts->vm, EXCEPTION_TYPE,
+				"complex number types are not supported by this libffi build");
+
+			return NULL;
+		}
+#endif
 
 		/* fall through */
 
 	case CT_STRUCT:
-		if (!st)
+		if (!st) {
+			size_t count = uc_ctype_member_count(cts, ct), num = 0, id;
+			ffi_type **elements;
+
+			/* A union shares its storage while a libffi element vector describes
+			 * consecutive members whose sizes add up, so no descriptor exists
+			 * which passes a union the way the ABI passes one. */
+			if (!count || (info & CTF_UNION))
+				return NULL;
+
+			/* libffi requires a NULL terminated member vector: without one,
+			 * initialize_aggregate() cannot derive size and alignment and
+			 * ffi_prep_cif() dereferences the missing members. */
+			elements = xalloc((count + 1) * sizeof(ffi_type *));
+
+			for (id = ct->sib; id && num < count; id = ctype_get(cts, id)->sib) {
+				CType *ctf = ctype_get(cts, id);
+				CType *field;
+
+				if (!ctype_isfield(ctf->info) && !ctype_isbitfield(ctf->info))
+					continue;
+
+				if (ctype_isbitfield(ctf->info)) {
+					/* describe a bitfield by its storage class, so that the
+					 * descriptor goes on matching the plain memory layout */
+					elements[num++] = (ctype_bitbsz(ctf->info) <= 32)
+						? &ffi_type_uint32
+						: &ffi_type_uint64;
+
+					continue;
+				}
+
+				field = ctype_rawchild(cts, ctf);
+
+				/* a function member is stored as a pointer */
+				elements[num++] = ctype_isfunc(field->info)
+					? &ffi_type_pointer
+					: uc_ctype_to_ffi_type(cts, ctype_typeid(cts, field),
+					                       NULL, NULL);
+
+				if (!elements[num - 1]) {
+					free(elements);
+
+					return NULL;
+				}
+			}
+
+			elements[num] = NULL;
+
 			st = xalloc(sizeof(ffi_type));
+			st->elements = elements;
+		}
 
 		st->type = FFI_TYPE_STRUCT;
 		st->size = size;
-		st->alignment = ctype_align(info);
+
+		/* the alignment stored in a CType is a base 2 logarithm, libffi expects
+		 * the plain byte value */
+		st->alignment = (uint16_t)(1u << ctype_align(info));
 
 		if (stmem)
 			*stmem = st;
@@ -1674,32 +1795,6 @@ uc_clib_wrap(uc_vm_t *vm, size_t nargs)
 }
 
 
-static size_t
-uc_ctype_count_custom_types(CTState *cts, CType *funcspec, CTypeID argtype)
-{
-	size_t n_custom_types = 0;
-
-	/* check whether return value requires a custom ffi type */
-	if (uc_ctype_requires_ffi_struct(cts, ctype_cid(funcspec->info)))
-		n_custom_types++;
-
-	while (true) {
-		if (!argtype)
-			break;
-
-		CType *ctf = ctype_get(cts, argtype);
-
-		assert(ctype_isfield(ctf->info));
-
-		argtype = ctf->sib;
-
-		if (uc_ctype_requires_ffi_struct(cts, ctype_cid(ctf->info)))
-			n_custom_types++;
-	}
-
-	return n_custom_types;
-}
-
 typedef struct {
 	ffi_closure closure;
 	ffi_cif cif;
@@ -1707,8 +1802,31 @@ typedef struct {
 	uc_vm_t *vm;
 	uc_value_t *func;
 	CType *ct;
+	/* Return type descriptor, when one had to be synthesized for it. Nothing
+	 * else refers to it, so the context retains it, along the descriptors it
+	 * synthesized for its arguments. Those denoting a predefined descriptor are
+	 * left alone, see uc_ffi_type_is_predefined(). */
+	ffi_type *rtype;
 	ffi_type *argtypes[];
 } uc_closure_context_t;
+
+/* Releases a closure context along the type descriptors it retained. */
+static void
+uc_closure_context_free(uc_closure_context_t *context)
+{
+	size_t i;
+
+	uc_ctype_free_ffi_type(context->rtype);
+	context->rtype = NULL;
+
+	/* A closure is invoked long after the call which created it, so the
+	 * descriptors synthesized for its arguments cannot be released with that
+	 * call and are retained here instead. */
+	for (i = 0; i < context->cif.nargs; i++)
+		uc_ctype_free_ffi_type(context->argtypes[i]);
+
+	ffi_closure_free(context);
+}
 
 static void
 uc_ctype_closure_cb(ffi_cif *cif, void *ret, void *args[], void *ud)
@@ -1759,7 +1877,7 @@ uc_ctype_closure_cb(ffi_cif *cif, void *ret, void *args[], void *ud)
 static uc_closure_context_t *
 ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 {
-	ffi_type *custom_type, **argument_type, *atype, *rtype, *stype;
+	ffi_type **argument_type, *atype, *rtype;
 	uc_closure_context_t *context;
 	ffi_abi abi = FFI_DEFAULT_ABI;
 	size_t context_size;
@@ -1809,10 +1927,12 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 	     cid_arg = ctype_get(cts, cid_arg)->sib)
 		;
 
-	/* compute required size & allocate storage for closure context */
-	context_size = sizeof(*context)
-		+ ct->size * sizeof(ffi_type *)
-		+ uc_ctype_count_custom_types(cts, ct, cid_arg) * sizeof(ffi_type);
+	/* Compute required size & allocate storage for closure context. Only the
+	 * vector of argument type pointers is stored inline; the descriptors belong
+	 * to uc_ctype_to_ffi_type(), which allocates them. Letting it fill in place
+	 * storage handed to it would have a structure describe itself with the size
+	 * and alignment a previously converted type left behind in that slot. */
+	context_size = sizeof(*context) + (ct->size ? ct->size : 1) * sizeof(ffi_type *);
 
 	context = ffi_closure_alloc(context_size, &codeloc);
 
@@ -1829,7 +1949,7 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 	context->ct = ct;
 
 	argument_type = (ffi_type **)context->argtypes;
-	custom_type = (ffi_type *)&argument_type[ct->size];
+	context->rtype = NULL;
 
 	/* select ABI */
 #ifdef X86
@@ -1857,7 +1977,7 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 #endif
 	}
 
-	rtype = uc_ctype_to_ffi_type(cts, ctype_cid(ct->info), custom_type, &stype);
+	rtype = uc_ctype_to_ffi_type(cts, ctype_cid(ct->info), NULL, &context->rtype);
 
 	if (!rtype) {
 		uc_value_t *repr = uc_ctype_repr(vm, ctype_cid(ct->info), NULL);
@@ -1871,9 +1991,6 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 		goto out;
 	}
 
-	if (rtype->type == FFI_TYPE_STRUCT)
-		custom_type++;
-
 	for (size_t i = 0; i < ct->size; i++) {
 		assert(cid_arg);
 
@@ -1882,7 +1999,7 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 		assert(ctype_isfield(ct_arg->info));
 
 		cid_arg = ct_arg->sib;
-		atype = uc_ctype_to_ffi_type(cts, ctype_cid(ct_arg->info), custom_type, NULL);
+		atype = uc_ctype_to_ffi_type(cts, ctype_cid(ct_arg->info), NULL, NULL);
 
 		if (!atype) {
 			uc_value_t *repr = uc_ctype_repr(vm, ctype_cid(ct->info), NULL);
@@ -1895,9 +2012,6 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 
 			goto out;
 		}
-
-		if (atype->type == FFI_TYPE_STRUCT)
-			custom_type++;
 
 		*(argument_type++) = atype;
 	}
@@ -1926,14 +2040,11 @@ ct_to_closure(uc_vm_t *vm, CTState *cts, CType *ct, uc_value_t *func)
 #endif
 
 	case FFI_OK:
-		free(stype);
-
 		return context;
 	}
 
 out:
-	free(stype);
-	ffi_closure_free(context);
+	uc_closure_context_free(context);
 
 	return NULL;
 }
@@ -1950,7 +2061,7 @@ close_closure(void *ud)
 	uc_closure_context_t *ctx = *(uc_closure_context_t **)(cd + 1);
 
 	if (ctx)
-		ffi_closure_free(ctx);
+		uc_closure_context_free(ctx);
 }
 
 /* --- ffi.closure methods ------------------------------------------------ */
@@ -2468,11 +2579,14 @@ uc_ctype_call(uc_vm_t *vm, size_t nargs)
 	}
 
 out:
-	free(stype);
+	/* The cif is done with the descriptors once ffi_prep_cif() returned, so the
+	 * ones it synthesized are released here. The predefined descriptors belong
+	 * to libffi and are left alone. */
+	uc_ctype_free_ffi_type(stype);
 
-	while (argtypes.count)
-		if (argtypes.entries[--argtypes.count]->type == FFI_TYPE_STRUCT)
-			free(argtypes.entries[argtypes.count]);
+	for (size_t i = 0; i < argtypes.count; i++)
+		if (!uc_ffi_type_is_predefined(argtypes.entries[i]))
+			uc_ctype_free_ffi_type(argtypes.entries[i]);
 
 	while (argmem.count) {
 		void *ptr = argmem.entries[--argmem.count];
@@ -2482,7 +2596,7 @@ out:
 				(uc_closure_context_t *)((uintptr_t)ptr & ~(uintptr_t)1u);
 
 			ucv_put(cc->func);
-			ffi_closure_free(cc);
+			uc_closure_context_free(cc);
 		}
 		else {
 			free(ptr);

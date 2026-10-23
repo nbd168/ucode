@@ -1,0 +1,28 @@
+A complex number is represented as a CT_ARRAY of two reals, so the width of the
+value decides which pair of conversions converts it back. Only the three widths
+libffi provides complex types for are representable; any other width must not
+fall through to the narrowest one, whose conversions are themselves complex and
+would re-enter the representation with the same width until the stack is
+exhausted, so it is reported instead.
+
+Represent the complex types of the widths libffi provides.
+
+-- Testcase --
+{%
+    import * as ffi from 'ffi';
+
+    // Only the three widths libffi provides complex types for can be converted
+    // back. Any other width must not fall through to the narrowest one, whose
+    // conversions are themselves complex and would re-enter the
+    // representation with the same width until the stack is exhausted.
+    print("float:  ", ffi.ctype('float complex', 1.0, 2.0).tostring(), "\n");
+    print("double: ", ffi.ctype('double complex', 1.0, 2.0).tostring(), "\n");
+    print("long:   ", ffi.ctype('long double complex', 1.0, 2.0).tostring(), "\n");
+%}
+-- End --
+
+-- Expect stdout --
+float:  complex float: 1+2i
+double: complex: 1+2i
+long:   complex: 1+2i
+-- End --
