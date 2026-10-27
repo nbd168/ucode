@@ -2047,10 +2047,11 @@ uc_nl_parse_rta_linkinfo(const uc_nl_attr_spec_t *spec, struct nl_msg *msg, char
 	if (!li_nla)
 		return nla_parse_error(spec, vm, val, "netlink message is full");
 
-	nla_put_string(msg, IFLA_INFO_KIND, kind);
-
 	p = strchr(kind, '_');
 	slave = p && !strcmp(p, "_slave");
+
+	if (!slave)
+		nla_put_string(msg, IFLA_INFO_KIND, kind);
 
 	attrs = link_attrs_lookup(kind, slave ? (size_t)(p - kind) : strlen(kind),
 		slave, &nattrs);
