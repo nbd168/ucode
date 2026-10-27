@@ -1059,8 +1059,11 @@ static const uc_nl_attr_spec_t link_vlan_attrs[] = {
 };
 
 static const uc_nl_attr_spec_t link_vrf_attrs[] = {
-	{ IFLA_VRF_PORT_TABLE, "port_table", DT_U32, DF_NO_SET, NULL },
 	{ IFLA_VRF_TABLE, "table", DT_U32, 0, NULL },
+};
+
+static const uc_nl_attr_spec_t link_vrf_slave_attrs[] = {
+	{ IFLA_VRF_PORT_TABLE, "port_table", DT_U32, DF_NO_SET, NULL },
 };
 
 static const uc_nl_attr_spec_t link_vxcan_attrs[] = {
@@ -2000,6 +2003,7 @@ static const struct link_type {
 static const struct link_type link_slave_types[] = {
 	LINK_SLAVE_TYPE(bond),
 	LINK_SLAVE_TYPE(bridge),
+	LINK_SLAVE_TYPE(vrf),
 };
 
 static const uc_nl_attr_spec_t *
@@ -2081,7 +2085,7 @@ uc_nl_convert_rta_linkinfo_data(uc_value_t *obj, size_t attr, struct nl_msg *msg
 	ucv_object_add(obj, "type", v);
 
 	attrs = link_attrs_lookup(ucv_string_get(v), ucv_string_length(v),
-		false, &nattrs);
+		attr == IFLA_INFO_SLAVE_KIND, &nattrs);
 
 	attr = (attr == IFLA_INFO_KIND) ? IFLA_INFO_DATA : IFLA_INFO_SLAVE_DATA;
 
